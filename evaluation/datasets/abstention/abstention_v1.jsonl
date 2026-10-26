@@ -1,0 +1,10 @@
+{"id": "a001", "type": "known", "question": "统计完单量", "expected_abstain": false, "expected_ok": true, "expected_metrics": ["完单量"]}
+{"id": "a002", "type": "known", "question": "查询大板订单量", "expected_abstain": false, "expected_ok": true, "expected_metrics": ["大板订单量"]}
+{"id": "a003", "type": "unknown", "question": "查询股票收益率", "expected_abstain": true, "expected_ok": false}
+{"id": "a004", "type": "unknown", "question": "北京今天天气怎么样", "expected_abstain": true, "expected_ok": false}
+{"id": "a005", "type": "unknown", "question": "查询员工的工资数据", "expected_abstain": true, "expected_ok": false}
+{"id": "a006", "type": "unknown", "question": "帮我预测下个月的大板订单量", "expected_abstain": true, "expected_ok": false}
+{"id": "a007", "type": "ambiguous", "question": "帮我查一下数据", "expected_abstain": true, "expected_ok": false}
+{"id": "a008", "type": "ambiguous", "question": "看看情况", "expected_abstain": true, "expected_ok": false}
+{"id": "a009", "type": "ambiguous", "question": "大板那个指标多少", "expected_abstain": true, "expected_ok": false}
+{"id": "a010", "type": "conflicting", "question": "完单率到底用 status=40 还是 status=6", "expected_abstain": true, "expected_ok": false}

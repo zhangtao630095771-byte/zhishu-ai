@@ -1,0 +1,25 @@
+# AI 取数 Agent 依赖清单
+# 安装：.venv/bin/python -m pip install -r requirements.txt
+
+# ── 核心能力 ──
+openai                  # 调用大模型（OpenAI 兼容接口，对接 DeepSeek）
+python-dotenv           # 读取 .env 里的配置和密钥
+fastembed               # 中文 Embedding 模型（RAG 检索用，比 sentence-transformers 轻很多）
+sqlglot                 # SQL 解析器（把 SQL 变成语法树，用于表级权限校验的精确提取）
+#   为什么需要它：guard.extract_tables() 要用它精确区分"真表"和"CTE 别名"，
+#   正则做不到这一点，会把 WITH t AS (...) 里的 t 当成表而误拦合法 SQL。
+
+# ── Web 服务（第一期新增）──
+fastapi                 # Web 框架（提供 HTTP API）
+uvicorn[standard]       # ASGI 服务器（跑 FastAPI）
+python-multipart        # FastAPI 处理表单数据用
+
+# ── 结果导出（Excel）──
+openpyxl                # 把查询结果导出为 .xlsx（CSV 用标准库，不需要额外依赖）
+
+# ── 生产数据源（可选，用 SQLite 开发时不会 import）──
+clickhouse-connect      # ClickHouse 官方客户端
+
+# 说明：
+#   sqlite3  是 Python 标准库，不需要写在这里
+#   用 SQLite 开发时，clickhouse-connect 不会被导入，不装也能跑

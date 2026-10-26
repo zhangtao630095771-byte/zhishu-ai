@@ -1,0 +1,923 @@
+{
+  "experiment_id": "EXP-20261008-115945",
+  "tag": "focus-v3",
+  "generated_at": "2026-10-08 12:00:38",
+  "dataset": "../../../../../tmp/focus",
+  "metrics": {
+    "overall_accuracy": 0.8571,
+    "intent_accuracy": 1.0,
+    "metric_accuracy": 1.0,
+    "time_accuracy": 1.0,
+    "sql_accuracy": 0.6667,
+    "table_retrieval_recall": 1.0,
+    "field_retrieval_recall": null,
+    "sql_execution_success_rate": 0.8571,
+    "result_accuracy": null,
+    "grounding_accuracy": 1.0,
+    "hallucination_rate": 0.0,
+    "abstention_accuracy": 0.0,
+    "p50_latency": 7.62,
+    "p95_latency": 8.01,
+    "avg_latency": 6.98,
+    "average_token": null,
+    "average_cost": null,
+    "consistency_rate": null,
+    "sample_count": 7,
+    "executed_count": 7,
+    "api_error_count": 0,
+    "_valid": true
+  },
+  "results": [
+    {
+      "id": "g001",
+      "name": "简单查询-订单量",
+      "category": "simple",
+      "difficulty": "easy",
+      "question": "查询订单量",
+      "ok": true,
+      "error": "",
+      "sql": "/* 未指定时间范围，默认统计近 30 天（2026-09-08 至 2026-10-08）；未指定业务线，按通用订单主表 dwd_tu_order_all 统计订单量 */ SELECT COUNT(*) AS \"订单量\" FROM ctc_data_warehouse.dwd_tu_order_all WHERE ctime >= toUnixTimestamp(toDateTime('2026-09-08 00:00:00')) AND ctime < toUnixTimestamp(toDateTime('2026-10-08 00:00:00'))",
+      "tables": [
+        "dwd_tu_order_all",
+        "ods_tu_large_handcart_order_all",
+        "ods_valet_order_all"
+      ],
+      "metrics": [
+        "订单量",
+        "大板订单量",
+        "代驾订单量"
+      ],
+      "understanding": {
+        "intent": "summary",
+        "metrics": [
+          "订单量"
+        ],
+        "entities": [],
+        "dimensions": [],
+        "time_range": "",
+        "filters": [],
+        "ambiguity": "未指定时间范围、业务类型（代驾/大板/小板）及分组维度，默认按整体订单量汇总",
+        "degraded": false
+      },
+      "answer": "本次查询共统计到订单量 130,472 笔。由于未限定具体时间范围、业务类型（代驾/大板/小板）及分组维度，该数字为整体汇总结果，反映当前查询范围内所有订单的下单总笔数。\n\n注：本次按未限定时间范围、业务类型及分组维度的整体订单量（COUNT(*)）口径计算。",
+      "validation": [],
+      "rows_preview": [
+        [
+          130472
+        ]
+      ],
+      "latency": 7.62,
+      "trace": [
+        {
+          "step": "enrich",
+          "ms": 272.1
+        },
+        {
+          "step": "understand",
+          "ms": 1176.4
+        },
+        {
+          "step": "retrieve",
+          "ms": 34.7
+        },
+        {
+          "step": "resolve_prompt",
+          "ms": 6.6
+        },
+        {
+          "step": "generate",
+          "ms": 753.5
+        },
+        {
+          "step": "validate",
+          "ms": 6.7
+        },
+        {
+          "step": "execute",
+          "ms": 1586.3
+        },
+        {
+          "step": "result_validate_answer",
+          "ms": 2991.4
+        }
+      ],
+      "scores": {
+        "ok": {
+          "status": true,
+          "detail": "ok=True 期望=True error="
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": true,
+          "detail": "缺表=[] 实际=['dwd_tu_order_all', 'ods_tu_large_handcart_order_all', 'ods_valet_order_all']"
+        },
+        "metrics": {
+          "status": true,
+          "detail": "缺指标=[] 实际=['订单量', '大板订单量', '代驾订单量']"
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": ""
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "format": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无依据表=[]"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        },
+        "intent": {
+          "status": true,
+          "detail": "got=summary 期望=summary"
+        }
+      }
+    },
+    {
+      "id": "g009",
+      "name": "同比-节前对比",
+      "category": "yoy",
+      "difficulty": "hard",
+      "question": "查询25号前7天同比去年中秋节前7天发单完单率",
+      "ok": true,
+      "error": "",
+      "sql": "/* 无法回答：所需数据表不在已授权范围内 */ SELECT round(COALESCE(SUM(CASE WHEN status = 6 THEN 1 ELSE 0 END) * 1.0 / COUNT(*), 0), 4) AS \"完单率\" FROM ctc_data_warehouse.dwd_tu_order_all WHERE toDate(toDateTime(ctime)) >= '2026-10-18' AND toDate(toDateTime(ctime)) <= '2026-10-24'",
+      "tables": [
+        "dwd_tu_order_all",
+        "ods_valet_order_all",
+        "ods_tu_customer_all",
+        "ods_user_register_detail_all",
+        "ods_tu_large_handcart_order_all"
+      ],
+      "metrics": [
+        "完单率",
+        "发单率",
+        "代驾完单率",
+        "大板完单率"
+      ],
+      "understanding": {
+        "intent": "compare",
+        "metrics": [
+          "发单率",
+          "完单率"
+        ],
+        "entities": [],
+        "dimensions": [],
+        "time_range": "2026-09-18~2026-09-24",
+        "filters": [],
+        "ambiguity": "“25号前7天”按当前日期2026-10-08理解为2026-09-18~2026-09-24；“去年中秋节前7天”按2025年中秋节2025-10-06换算为2025-09-29~2025-10-05；指标“发单完单率”拆解为“发单率”和“完单率”。",
+        "degraded": false
+      },
+      "answer": "查询结果中“完单率”为 nan，说明在本次选定的时间范围内没有可用的有效订单数据，无法计算出完单率，因此也无法与去年同期进行同比对比。建议先确认该时间段内是否存在订单记录，或放宽时间范围后重新查询。\n\n注：本次按“25号前7天”为2026-09-18~2026-09-24、“去年中秋节前7天”为2025-09-29~2025-10-05，且“发单完单率”拆解为发单率与完单率的口径/假设计算。",
+      "validation": [],
+      "rows_preview": [
+        [
+          NaN
+        ]
+      ],
+      "latency": 7.83,
+      "trace": [
+        {
+          "step": "enrich",
+          "ms": 0.0
+        },
+        {
+          "step": "understand",
+          "ms": 1021.8
+        },
+        {
+          "step": "retrieve",
+          "ms": 48.9
+        },
+        {
+          "step": "resolve_prompt",
+          "ms": 7.7
+        },
+        {
+          "step": "generate",
+          "ms": 868.0
+        },
+        {
+          "step": "validate",
+          "ms": 4.5
+        },
+        {
+          "step": "execute",
+          "ms": 1595.6
+        },
+        {
+          "step": "result_validate_answer",
+          "ms": 4279.0
+        }
+      ],
+      "scores": {
+        "ok": {
+          "status": true,
+          "detail": "ok=True 期望=True error="
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": null,
+          "detail": ""
+        },
+        "metrics": {
+          "status": true,
+          "detail": "缺指标=[] 实际=['完单率', '发单率', '代驾完单率', '大板完单率']"
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": "time_sensitive 跳过"
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "format": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无依据表=[]"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        },
+        "intent": {
+          "status": true,
+          "detail": "got=compare 期望=compare"
+        }
+      }
+    },
+    {
+      "id": "g011",
+      "name": "模糊表达-情况",
+      "category": "vague",
+      "difficulty": "hard",
+      "question": "最近大板情况怎么样",
+      "ok": true,
+      "error": "",
+      "sql": "/* 未指定时间范围，默认统计近 30 天（2026-09-08 至 2026-10-08）；未指定指标，按最基础的订单量与完单率统计 */ SELECT COUNT(*) AS \"大板订单量\", SUM(CASE WHEN state = 6 THEN 1 ELSE 0 END) AS \"大板完单量\", round(COALESCE(SUM(CASE WHEN state = 6 THEN 1 ELSE 0 END) * 1.0 / COUNT(*), 0), 4) AS \"大板完单率\" FROM ctc_data_warehouse.ods_tu_large_handcart_order_all WHERE order_time >= '2026-09-08 00:00:00' AND order_time < '2026-10-08 00:00:00'",
+      "tables": [
+        "ods_tu_large_handcart_order_all"
+      ],
+      "metrics": [
+        "大板完单率"
+      ],
+      "understanding": {
+        "intent": "summary",
+        "metrics": [],
+        "entities": [
+          "大板订单",
+          "大板订单表"
+        ],
+        "dimensions": [],
+        "time_range": "",
+        "filters": [],
+        "ambiguity": "“最近”未明确具体时间范围，需假设为近7天或近30天；“情况怎么样”未指定具体指标，需进一步确认关注大板订单量、完单量、完单金额、完单率等哪些指标",
+        "degraded": false
+      },
+      "answer": "最近大板整体完单率为9.2%，也就是说每100笔大板订单中约有9笔完成，订单量为14217笔，完单量为1308笔。整体来看，大板订单的完成比例偏低，后续可重点关注未完成订单的原因。注：本次按“大板完单量÷大板订单量”的完单率口径计算，且“最近”未明确具体时间范围，需结合实际查询周期确认。",
+      "validation": [],
+      "rows_preview": [
+        [
+          14217,
+          1308,
+          0.092
+        ]
+      ],
+      "latency": 6.48,
+      "trace": [
+        {
+          "step": "enrich",
+          "ms": 0.0
+        },
+        {
+          "step": "understand",
+          "ms": 763.1
+        },
+        {
+          "step": "retrieve",
+          "ms": 37.8
+        },
+        {
+          "step": "resolve_prompt",
+          "ms": 5.4
+        },
+        {
+          "step": "generate",
+          "ms": 920.0
+        },
+        {
+          "step": "validate",
+          "ms": 5.0
+        },
+        {
+          "step": "execute",
+          "ms": 1349.1
+        },
+        {
+          "step": "result_validate_answer",
+          "ms": 3399.5
+        }
+      ],
+      "scores": {
+        "ok": {
+          "status": true,
+          "detail": "ok=True 期望=True error="
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": true,
+          "detail": "缺表=[] 实际=['ods_tu_large_handcart_order_all']"
+        },
+        "metrics": {
+          "status": null,
+          "detail": ""
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": ""
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "format": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无依据表=[]"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        },
+        "intent": {
+          "status": true,
+          "detail": "got=summary 期望=summary"
+        }
+      }
+    },
+    {
+      "id": "g019",
+      "name": "易混淆字段-通用status=6",
+      "category": "confusable_field",
+      "difficulty": "hard",
+      "question": "查询完单金额",
+      "ok": true,
+      "error": "",
+      "sql": "SELECT COALESCE(SUM(total), 0) AS \"完单金额\" FROM ctc_data_warehouse.dwd_tu_order_all WHERE status = 6 AND ctime >= toUnixTimestamp(now() - INTERVAL '30' DAY) AND ctime < toUnixTimestamp(now())",
+      "tables": [
+        "ods_tu_large_handcart_order_all",
+        "ods_valet_order_all",
+        "dwd_tu_order_all"
+      ],
+      "metrics": [
+        "大板完单金额",
+        "代驾完单金额",
+        "完单金额"
+      ],
+      "understanding": {
+        "intent": "summary",
+        "metrics": [
+          "完单金额"
+        ],
+        "entities": [],
+        "dimensions": [],
+        "time_range": "",
+        "filters": [],
+        "ambiguity": "未指定时间范围、业务线（代驾/大板）及分组维度，默认按整体汇总完单金额",
+        "degraded": false
+      },
+      "answer": "本次整体完单金额合计为 31,247,433.90 元。该结果为已完成订单的金额汇总，反映当前查询范围内完单交易的总规模。由于本次未指定时间范围、业务线及分组维度，因此仅能给出整体汇总值，无法进一步判断趋势或拆分构成。注：本次按未限定时间范围、业务线及分组维度，默认对已完成订单金额进行整体汇总的口径/假设计算。",
+      "validation": [],
+      "rows_preview": [
+        [
+          "31247433.90"
+        ]
+      ],
+      "latency": 5.71,
+      "trace": [
+        {
+          "step": "enrich",
+          "ms": 0.0
+        },
+        {
+          "step": "understand",
+          "ms": 892.7
+        },
+        {
+          "step": "retrieve",
+          "ms": 29.8
+        },
+        {
+          "step": "resolve_prompt",
+          "ms": 4.8
+        },
+        {
+          "step": "generate",
+          "ms": 1097.5
+        },
+        {
+          "step": "validate",
+          "ms": 3.4
+        },
+        {
+          "step": "execute",
+          "ms": 818.4
+        },
+        {
+          "step": "result_validate_answer",
+          "ms": 2861.3
+        }
+      ],
+      "scores": {
+        "ok": {
+          "status": true,
+          "detail": "ok=True 期望=True error="
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": true,
+          "detail": "缺表=[] 实际=['ods_tu_large_handcart_order_all', 'ods_valet_order_all', 'dwd_tu_order_all']"
+        },
+        "metrics": {
+          "status": true,
+          "detail": "缺指标=[] 实际=['大板完单金额', '代驾完单金额', '完单金额']"
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": true,
+          "detail": "SQL缺谓词=[]"
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": ""
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "format": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无依据表=[]"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        },
+        "intent": {
+          "status": true,
+          "detail": "got=summary 期望=summary"
+        }
+      }
+    },
+    {
+      "id": "g034",
+      "name": "边界-跨年区间",
+      "category": "boundary",
+      "difficulty": "hard",
+      "question": "查询2025年12月到2026年1月的订单量",
+      "ok": true,
+      "error": "",
+      "sql": "SELECT COUNT(*) AS \"订单量\" FROM ctc_data_warehouse.dwd_tu_order_all WHERE ctime >= toUnixTimestamp(toDateTime('2025-12-01 00:00:00')) AND ctime < toUnixTimestamp(toDateTime('2026-02-01 00:00:00'))",
+      "tables": [
+        "dwd_tu_order_all",
+        "ods_valet_order_all",
+        "ods_tu_large_handcart_order_all"
+      ],
+      "metrics": [
+        "订单量",
+        "大板订单量",
+        "代驾订单量"
+      ],
+      "understanding": {
+        "intent": "summary",
+        "metrics": [
+          "订单量"
+        ],
+        "entities": [],
+        "dimensions": [],
+        "time_range": "2025-12-01~2026-01-31",
+        "filters": [],
+        "ambiguity": "未指定订单类型（代驾/大板/小板），默认按全部订单量统计",
+        "degraded": false
+      },
+      "answer": "2025年12月至2026年1月，全部订单量合计为244,158笔。由于查询结果仅提供了总量、未提供分月或分类型明细，因此无法进一步判断该期间内的月度变化趋势或各订单类型的占比情况。\n\n注：本次按未区分订单类型（代驾/大板/小板）、统计全部订单量的假设计算。",
+      "validation": [],
+      "rows_preview": [
+        [
+          244158
+        ]
+      ],
+      "latency": 5.28,
+      "trace": [
+        {
+          "step": "enrich",
+          "ms": 0.0
+        },
+        {
+          "step": "understand",
+          "ms": 717.6
+        },
+        {
+          "step": "retrieve",
+          "ms": 42.4
+        },
+        {
+          "step": "resolve_prompt",
+          "ms": 6.2
+        },
+        {
+          "step": "generate",
+          "ms": 724.7
+        },
+        {
+          "step": "validate",
+          "ms": 2.9
+        },
+        {
+          "step": "execute",
+          "ms": 660.2
+        },
+        {
+          "step": "result_validate_answer",
+          "ms": 3124.4
+        }
+      ],
+      "scores": {
+        "ok": {
+          "status": true,
+          "detail": "ok=True 期望=True error="
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": true,
+          "detail": "缺表=[] 实际=['dwd_tu_order_all', 'ods_valet_order_all', 'ods_tu_large_handcart_order_all']"
+        },
+        "metrics": {
+          "status": null,
+          "detail": ""
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": true,
+          "detail": "SQL缺谓词=[]"
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": true,
+          "detail": ""
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "format": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无依据表=[]"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        },
+        "intent": {
+          "status": true,
+          "detail": "got=summary 期望=summary"
+        }
+      }
+    },
+    {
+      "id": 9,
+      "name": "国庆假期区间（2025 官方安排）+ 小板订单 → 区间必须落进 SQL",
+      "category": "regression",
+      "difficulty": null,
+      "question": "2025年国庆假期期间小板订单的订单量",
+      "ok": true,
+      "error": "",
+      "sql": "SELECT COUNT(*) AS \"订单量\" FROM ctc_data_warehouse.dwd_tu_order_all WHERE order_type = 1 AND toDateTime(ctime) >= '2025-10-01 00:00:00' AND toDateTime(ctime) < '2025-10-09 00:00:00'",
+      "tables": [
+        "dwd_tu_order_all"
+      ],
+      "metrics": [
+        "订单量"
+      ],
+      "understanding": {
+        "intent": "summary",
+        "metrics": [
+          "订单量"
+        ],
+        "entities": [
+          "小板订单表"
+        ],
+        "dimensions": [],
+        "time_range": "2025-10-01~2025-10-07",
+        "filters": [],
+        "ambiguity": "国庆假期具体天数未明确，按通常7天（2025-10-01至2025-10-07）理解；若含调休或中秋（2025-10-06）重叠，范围可能不同。",
+        "degraded": false
+      },
+      "answer": "2025年国庆假期期间，小板订单的订单量为34,133单。该数字为假期内所有小板订单的累计计数，反映的是整体下单规模，不涉及同比或环比变化。\n\n注：本次按通常7天假期（2025-10-01至2025-10-07）口径计算，若实际假期天数或调休安排不同，订单量可能有所变化。",
+      "validation": [],
+      "rows_preview": [
+        [
+          34133
+        ]
+      ],
+      "latency": 7.9,
+      "trace": [
+        {
+          "step": "enrich",
+          "ms": 0.0
+        },
+        {
+          "step": "understand",
+          "ms": 1106.2
+        },
+        {
+          "step": "retrieve",
+          "ms": 55.2
+        },
+        {
+          "step": "resolve_prompt",
+          "ms": 5.5
+        },
+        {
+          "step": "generate",
+          "ms": 1102.5
+        },
+        {
+          "step": "validate",
+          "ms": 2.4
+        },
+        {
+          "step": "execute",
+          "ms": 2174.8
+        },
+        {
+          "step": "result_validate_answer",
+          "ms": 3453.5
+        }
+      ],
+      "scores": {
+        "ok": {
+          "status": true,
+          "detail": "ok=True 期望=True error="
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": true,
+          "detail": "缺表=[] 实际=['dwd_tu_order_all']"
+        },
+        "metrics": {
+          "status": true,
+          "detail": "缺指标=[] 实际=['订单量']"
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": true,
+          "detail": ""
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "format": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无依据表=[]"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        }
+      }
+    },
+    {
+      "id": 10,
+      "name": "国庆假期（当年）+ 指标不明 → 应「需要澄清」而非「表结构不足」",
+      "category": "regression",
+      "difficulty": null,
+      "question": "查询分析国庆假期期间小板订单的数据",
+      "ok": true,
+      "error": "",
+      "sql": "SELECT COUNT(*) AS \"订单量\", COALESCE(SUM(CASE WHEN o.status = 6 THEN 1 ELSE 0 END), 0) AS \"完单量\", round(COALESCE(SUM(CASE WHEN o.status = 6 THEN 1 ELSE 0 END) * 1.0 / COUNT(*), 0), 4) AS \"完单率\", COALESCE(SUM(o.total), 0) AS \"订单金额\", COALESCE(SUM(CASE WHEN o.status = 6 THEN o.total ELSE 0 END), 0) AS \"完单金额\" FROM ctc_data_warehouse.dwd_tu_order_all AS o WHERE o.order_type = 1 AND toDateTime(o.ctime) >= '2026-10-01 00:00:00' AND toDateTime(o.ctime) < '2026-10-08 00:00:00'",
+      "tables": [
+        "ods_tu_order_pricing_record_all",
+        "dwd_tu_order_all",
+        "ods_tu_customer_all"
+      ],
+      "metrics": [
+        "询价后发单率"
+      ],
+      "understanding": {
+        "intent": "summary",
+        "metrics": [],
+        "entities": [
+          "小板订单表"
+        ],
+        "dimensions": [],
+        "time_range": "2026-10-01~2026-10-07",
+        "filters": [],
+        "ambiguity": "国庆假期具体天数未明确，按惯例取10月1日至10月7日；'数据'未指明具体指标，故metrics留空",
+        "degraded": false
+      },
+      "answer": "国庆假期期间（10月1日至10月7日），小板订单共产生 26625 单，其中完成 7067 单，完单率为 26.54%，即每 100 单中约有 27 单最终完成。订单总金额约 2438.23 万元，完成订单的金额约 503.15 万元，说明已完单金额约占总订单金额的 20.6%，存在一定比例的订单未最终完成。\n\n注：本次按国庆假期为10月1日至10月7日、且未指定具体指标（以订单量、完单量、完单率、订单金额、完单金额为准）的口径计算。",
+      "validation": [],
+      "rows_preview": [
+        [
+          26625,
+          7067,
+          0.2654,
+          "24382262.00",
+          "5031470.00"
+        ]
+      ],
+      "latency": 8.01,
+      "trace": [
+        {
+          "step": "enrich",
+          "ms": 0.0
+        },
+        {
+          "step": "understand",
+          "ms": 759.7
+        },
+        {
+          "step": "retrieve",
+          "ms": 62.7
+        },
+        {
+          "step": "resolve_prompt",
+          "ms": 7.3
+        },
+        {
+          "step": "generate",
+          "ms": 1034.3
+        },
+        {
+          "step": "validate",
+          "ms": 9.3
+        },
+        {
+          "step": "execute",
+          "ms": 1195.2
+        },
+        {
+          "step": "result_validate_answer",
+          "ms": 4942.7
+        }
+      ],
+      "scores": {
+        "ok": {
+          "status": false,
+          "detail": "ok=True 期望=False error="
+        },
+        "abstain": {
+          "status": false,
+          "detail": "abstain=False 期望=True"
+        },
+        "tables": {
+          "status": null,
+          "detail": ""
+        },
+        "metrics": {
+          "status": null,
+          "detail": ""
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": false,
+          "detail": "SQL缺谓词=['需要澄清']"
+        },
+        "sql_not_contains": {
+          "status": true,
+          "detail": "SQL含禁止谓词=[]"
+        },
+        "time": {
+          "status": null,
+          "detail": ""
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "format": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无依据表=[]"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        }
+      }
+    }
+  ]
+}

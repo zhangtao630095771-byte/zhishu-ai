@@ -1,0 +1,78 @@
+[
+  {
+    "name": "GMV",
+    "keywords": [
+      "gmv",
+      "成交金额",
+      "成交额"
+    ],
+    "definition": "GMV = COALESCE(SUM(CASE WHEN status = 6 THEN amount ELSE 0 END), 0)\n  只统计已完成订单的金额",
+    "doc": "GMV：成交总额、成交额、交易额，已完成订单的金额总和",
+    "tables": [
+      "dwd_order_all"
+    ]
+  },
+  {
+    "name": "取消率",
+    "keywords": [
+      "取消率",
+      "取消比例"
+    ],
+    "definition": "取消率 = COALESCE(SUM(CASE WHEN status = 7 THEN 1 ELSE 0 END) * 1.0 / COUNT(*), 0)\n  ★ COALESCE 必须套在【整个除法表达式】的最外层，只套分子是无效的\n  ★ 乘法里的 * 1.0 是为了避免整数相除被截断成 0\n  分母为该时间范围内的全部订单，禁止把 status=7 写进 WHERE",
+    "doc": "取消率：已取消订单数占总订单数的比例，也叫取消比例、订单取消占比",
+    "tables": [
+      "dwd_order_all"
+    ]
+  },
+  {
+    "name": "完单率",
+    "keywords": [
+      "完单率",
+      "完成率"
+    ],
+    "definition": "完单率 = COALESCE(SUM(CASE WHEN status = 6 THEN 1 ELSE 0 END) * 1.0 / COUNT(*), 0)\n  ★ COALESCE 必须套在【整个除法表达式】的最外层\n  分母为该时间范围内的全部订单",
+    "doc": "完单率：已完成订单数占总订单数的比例，也叫完成率、订单完成比例",
+    "tables": [
+      "dwd_order_all"
+    ]
+  },
+  {
+    "name": "完单量",
+    "keywords": [
+      "完单量",
+      "完单",
+      "完成订单"
+    ],
+    "definition": "完单量 = SUM(CASE WHEN status = 6 THEN 1 ELSE 0 END)",
+    "doc": "完单量：已完成状态（status=6）的订单数量，也叫完成订单数",
+    "tables": [
+      "dwd_order_all"
+    ]
+  },
+  {
+    "name": "客单价",
+    "keywords": [
+      "客单价",
+      "单均价",
+      "客单"
+    ],
+    "definition": "客单价 = COALESCE(SUM(CASE WHEN status = 6 THEN amount ELSE 0 END) * 1.0 / SUM(CASE WHEN status = 6 THEN 1 ELSE 0 END), 0)\n  ★ 分子【和】分母都只统计已完成订单（status=6），取消订单不计入\n    错误写法：SUM(amount) / ...  ← 这样会把取消单的金额也算进去\n  ★ * 1.0 是为了避免整数相除被截断",
+    "doc": "客单价：平均每个已完成订单的金额，也叫单均价、每单平均金额、平均每单多少钱、客单、平均每单花多少钱、一单平均能收多少、每单收多少钱",
+    "tables": [
+      "dwd_order_all"
+    ]
+  },
+  {
+    "name": "订单量",
+    "keywords": [
+      "订单量",
+      "订单数",
+      "单量"
+    ],
+    "definition": "订单量 = COUNT(*)",
+    "doc": "订单量：订单的总数量，也叫订单数、单量、下单笔数",
+    "tables": [
+      "dwd_order_all"
+    ]
+  }
+]

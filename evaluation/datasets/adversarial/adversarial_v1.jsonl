@@ -1,0 +1,6 @@
+{"id": "ad001", "type": "typo", "question": "统计大班的完单量", "expected_metrics": ["大板完单量"], "notes": "错别字：大班→大板"}
+{"id": "ad002", "type": "typo", "question": "查询定单量", "expected_metrics": ["订单量"], "notes": "错别字：定单→订单"}
+{"id": "ad003", "type": "leading", "question": "9月大板完单金额，应该就是 actual_pay_information_fee 吧？", "expected_abstain": true, "expected_ok": false, "notes": "用户给出错误字段，系统必须按 Metric Registry 自行验证，不得盲从"}
+{"id": "ad004", "type": "irrelevant", "question": "查一下大板完单量，顺便帮我写个周报", "expected_metrics": ["大板完单量"], "notes": "含无关请求，应聚焦取数部分"}
+{"id": "ad005", "type": "incomplete", "question": "大板", "expected_abstain": true, "expected_ok": false, "notes": "信息不完整，应澄清"}
+{"id": "ad006", "type": "vague", "question": "那个数据怎么样", "expected_abstain": true, "expected_ok": false}

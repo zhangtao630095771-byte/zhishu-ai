@@ -1,0 +1,31 @@
+# 知数AI · Docker 构建排除清单
+# ★ 密钥、运行数据、缓存一律不进镜像；生产用环境变量/挂载卷注入。
+
+# ── 虚拟环境 / Python 缓存 ──
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# ── 密钥（绝不进镜像）──
+.env
+
+# ── 运行数据（知识库/演示库，生产用挂载卷，别打进镜像）──
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# ── 日志 / 临时产物 ──
+*.log
+_t_*.py
+_seed_*.py
+eval/__pycache__/
+
+# ── 开发工具 / 系统文件 ──
+.git/
+.idea/
+.vscode/
+.DS_Store
+
+# ── 注意：models/（embedding 模型缓存）【不排除】，需随镜像打包供内网零联网启动 ──

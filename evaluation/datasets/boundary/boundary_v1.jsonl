@@ -1,0 +1,13 @@
+{"id": "b001", "category": "boundary", "boundary_type": "今天", "question": "今天", "time_sensitive": true}
+{"id": "b002", "category": "boundary", "boundary_type": "昨天", "question": "昨天的订单量", "time_sensitive": true}
+{"id": "b003", "category": "boundary", "boundary_type": "本周", "question": "本周的订单量", "time_sensitive": true}
+{"id": "b004", "category": "boundary", "boundary_type": "上周", "question": "上周的订单量", "time_sensitive": true}
+{"id": "b005", "category": "boundary", "boundary_type": "本月", "question": "本月的订单量", "time_sensitive": true}
+{"id": "b006", "category": "boundary", "boundary_type": "上月", "question": "上月的订单量", "time_sensitive": true}
+{"id": "b007", "category": "boundary", "boundary_type": "今年", "question": "今年的订单量", "time_sensitive": true}
+{"id": "b008", "category": "boundary", "boundary_type": "去年", "question": "去年的订单量", "time_sensitive": true}
+{"id": "b009", "category": "boundary", "boundary_type": "季度", "question": "2026年第三季度的订单量", "time_sensitive": true}
+{"id": "b010", "category": "boundary", "boundary_type": "半年度", "question": "2026年下半年的订单量", "time_sensitive": true}
+{"id": "b011", "category": "boundary", "boundary_type": "跨年", "question": "2025年12月到2026年1月的订单量", "time_sensitive": true}
+{"id": "b012", "category": "boundary", "boundary_type": "月底月初", "question": "2026年2月底的订单量", "time_sensitive": true}
+{"id": "b013", "category": "boundary", "boundary_type": "未来日期", "question": "2027年1月的订单量", "time_sensitive": true}

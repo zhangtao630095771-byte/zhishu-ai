@@ -1,0 +1,1470 @@
+{
+  "experiment_id": "EXP-20261008-152100",
+  "tag": "named-table-fix",
+  "generated_at": "2026-10-08 15:22:04",
+  "dataset": "evaluation/datasets/regression",
+  "metrics": {
+    "overall_accuracy": 0.75,
+    "intent_accuracy": null,
+    "metric_accuracy": 1.0,
+    "time_accuracy": 1.0,
+    "sql_accuracy": 0.8333,
+    "table_retrieval_recall": 1.0,
+    "field_retrieval_recall": null,
+    "sql_execution_success_rate": 0.8333,
+    "result_accuracy": null,
+    "grounding_accuracy": 1.0,
+    "hallucination_rate": 0.0,
+    "abstention_accuracy": 1.0,
+    "p50_latency": 5.37,
+    "p95_latency": 7.51,
+    "avg_latency": 5.2,
+    "average_token": null,
+    "average_cost": null,
+    "consistency_rate": null,
+    "sample_count": 12,
+    "executed_count": 10,
+    "api_error_count": 0,
+    "_valid": true
+  },
+  "results": [
+    {
+      "id": 1,
+      "name": "代驾订单量/完单量/完单率（status=40 口径）",
+      "category": "regression",
+      "difficulty": null,
+      "question": "查询代驾订单的订单量、完单量、完单率",
+      "ok": true,
+      "error": "",
+      "sql": "SELECT COUNT(*) AS \"代驾订单量\", SUM(CASE WHEN status = 40 THEN 1 ELSE 0 END) AS \"代驾完单量\", round(COALESCE(SUM(CASE WHEN status = 40 THEN 1 ELSE 0 END) * 1.0 / COUNT(*), 0), 4) AS \"代驾完单率\" FROM ctc_data_warehouse.ods_valet_order_all WHERE order_time >= '2026-09-08 00:00:00' AND order_time < '2026-10-08 00:00:00'",
+      "tables": [
+        "ods_valet_order_all",
+        "ods_valet_fee_detail_all"
+      ],
+      "metrics": [
+        "代驾订单金额",
+        "代驾完单率",
+        "代驾信息费",
+        "代驾订单量",
+        "代驾完单量"
+      ],
+      "understanding": {
+        "intent": "summary",
+        "metrics": [
+          "订单量",
+          "完单量",
+          "完单率"
+        ],
+        "entities": [
+          "代驾订单"
+        ],
+        "dimensions": [],
+        "time_range": "",
+        "filters": [],
+        "ambiguity": "",
+        "degraded": false
+      },
+      "answer": "本期代驾订单量为 4068 单，其中已完成 1080 单，完单率为 26.55%。也就是说，每 100 笔代驾订单中，大约有 27 笔最终完成。\n\n注：本次按“代驾订单量=下单总笔数、代驾完单量=状态为已完成（status=40）的订单笔数、完单率=完单量÷订单量”的口径计算。",
+      "validation": [
+        {
+          "severity": "warning",
+          "tier": "P1",
+          "rule": "metric_fee_field",
+          "message": "命中指标涉及费用字段 ['service_fee']，但 SQL 中未发现",
+          "suggestion": "按口径取对应的费用字段（代驾=service_fee，大板=information_fee）"
+        }
+      ],
+      "rows_preview": [
+        [
+          4068,
+          1080,
+          0.2655
+        ]
+      ],
+      "latency": 7.12,
+      "trace": [
+        {
+          "step": "enrich",
+          "ms": 180.4
+        },
+        {
+          "step": "understand",
+          "ms": 1194.8
+        },
+        {
+          "step": "retrieve",
+          "ms": 138.8
+        },
+        {
+          "step": "resolve_prompt",
+          "ms": 11.7
+        },
+        {
+          "step": "generate",
+          "ms": 1146.7
+        },
+        {
+          "step": "validate",
+          "ms": 10.6
+        },
+        {
+          "step": "execute",
+          "ms": 254.6
+        },
+        {
+          "step": "result_validate_answer",
+          "ms": 3639.1
+        }
+      ],
+      "scores": {
+        "ok": {
+          "status": true,
+          "detail": "ok=True 期望=True error="
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": true,
+          "detail": "缺表=[] 实际=['ods_valet_order_all', 'ods_valet_fee_detail_all']"
+        },
+        "metrics": {
+          "status": true,
+          "detail": "缺指标=[] 实际=['代驾订单金额', '代驾完单率', '代驾信息费', '代驾订单量', '代驾完单量']"
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": true,
+          "detail": "SQL缺谓词=[]"
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": ""
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "format": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无依据表=[]"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        }
+      }
+    },
+    {
+      "id": 2,
+      "name": "线上订单口径（is_salesman=0 AND is_service_staff IN 0,4,5）",
+      "category": "regression",
+      "difficulty": null,
+      "question": "统计线上订单的订单量",
+      "ok": true,
+      "error": "",
+      "sql": "SELECT COUNT(*) AS \"线上订单量\" FROM ctc_data_warehouse.dwd_tu_order_all WHERE is_salesman = 0 AND is_service_staff IN (0, 4, 5) AND ctime >= toUnixTimestamp(now() - INTERVAL '30' DAY) AND ctime < toUnixTimestamp(now())",
+      "tables": [
+        "dwd_tu_order_all",
+        "ods_tu_large_handcart_order_all",
+        "ods_valet_order_all"
+      ],
+      "metrics": [
+        "订单量",
+        "线上订单",
+        "大板订单量",
+        "代驾订单量"
+      ],
+      "understanding": {
+        "intent": "summary",
+        "metrics": [
+          "订单量"
+        ],
+        "entities": [],
+        "dimensions": [],
+        "time_range": "",
+        "filters": [],
+        "ambiguity": "“线上订单”在权威指标清单中作为指标存在，在业务实体清单中未单独列出，此处按指标“线上订单”与指标“订单量”组合理解，统计线上订单的订单量。",
+        "degraded": false
+      },
+      "answer": "线上订单的订单量共计 81970 笔。该数字表示在统计范围内，由客户自主通过线上渠道（C端/App）发起、且非业务员发单、非各线路调度代发的订单总笔数。\n\n注：本次按“线上订单”指标口径（is_salesman=0 且 is_service_staff∈{0,4,5}）与“订单量=COUNT(*)”组合计算。",
+      "validation": [],
+      "rows_preview": [
+        [
+          81970
+        ]
+      ],
+      "latency": 5.59,
+      "trace": [
+        {
+          "step": "enrich",
+          "ms": 0.0
+        },
+        {
+          "step": "understand",
+          "ms": 876.1
+        },
+        {
+          "step": "retrieve",
+          "ms": 49.3
+        },
+        {
+          "step": "resolve_prompt",
+          "ms": 6.0
+        },
+        {
+          "step": "generate",
+          "ms": 842.2
+        },
+        {
+          "step": "validate",
+          "ms": 4.8
+        },
+        {
+          "step": "execute",
+          "ms": 282.7
+        },
+        {
+          "step": "result_validate_answer",
+          "ms": 3530.9
+        }
+      ],
+      "scores": {
+        "ok": {
+          "status": true,
+          "detail": "ok=True 期望=True error="
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": null,
+          "detail": ""
+        },
+        "metrics": {
+          "status": true,
+          "detail": "缺指标=[] 实际=['订单量', '线上订单', '大板订单量', '代驾订单量']"
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": true,
+          "detail": "SQL缺谓词=[]"
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": ""
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "format": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无依据表=[]"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        }
+      }
+    },
+    {
+      "id": 3,
+      "name": "调度单口径（is_salesman=1 AND is_service_staff IN 1,2,3）",
+      "category": "regression",
+      "difficulty": null,
+      "question": "统计调度单的订单量",
+      "ok": true,
+      "error": "",
+      "sql": "SELECT COUNT(*) AS \"调度单订单量\" FROM ctc_data_warehouse.dwd_tu_order_all WHERE is_salesman = 1 AND is_service_staff IN (1, 2, 3) AND ctime >= toUnixTimestamp(now() - INTERVAL '30' DAY) AND ctime < toUnixTimestamp(now())",
+      "tables": [
+        "dwd_tu_order_all",
+        "ods_tu_large_handcart_order_all",
+        "ods_valet_order_all"
+      ],
+      "metrics": [
+        "订单量",
+        "调度单",
+        "大板订单量",
+        "代驾订单量"
+      ],
+      "understanding": {
+        "intent": "summary",
+        "metrics": [
+          "订单量"
+        ],
+        "entities": [],
+        "dimensions": [],
+        "time_range": "",
+        "filters": [
+          "订单类型=调度单"
+        ],
+        "ambiguity": "“调度单”在权威指标清单中对应“调度单”，但用户表述为“调度单的订单量”，理解为对调度单这一订单类型统计订单量；若“调度单”应作为独立指标而非过滤条件，则需进一步确认。",
+        "degraded": false
+      },
+      "answer": "调度单订单量为 0 单，即按本次口径未统计到任何由业务员发单且由调度代发的订单。  \n注：本次按“调度单”作为订单类型过滤条件、并同时满足 is_salesman=1 且 is_service_staff∈(1,2,3) 的口径计算。",
+      "validation": [],
+      "rows_preview": [
+        [
+          0
+        ]
+      ],
+      "latency": 5.79,
+      "trace": [
+        {
+          "step": "enrich",
+          "ms": 0.0
+        },
+        {
+          "step": "understand",
+          "ms": 965.5
+        },
+        {
+          "step": "retrieve",
+          "ms": 41.1
+        },
+        {
+          "step": "resolve_prompt",
+          "ms": 5.7
+        },
+        {
+          "step": "generate",
+          "ms": 913.7
+        },
+        {
+          "step": "validate",
+          "ms": 2.4
+        },
+        {
+          "step": "execute",
+          "ms": 315.9
+        },
+        {
+          "step": "result_validate_answer",
+          "ms": 3548.7
+        }
+      ],
+      "scores": {
+        "ok": {
+          "status": true,
+          "detail": "ok=True 期望=True error="
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": null,
+          "detail": ""
+        },
+        "metrics": {
+          "status": true,
+          "detail": "缺指标=[] 实际=['订单量', '调度单', '大板订单量', '代驾订单量']"
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": true,
+          "detail": "SQL缺谓词=[]"
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": ""
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "format": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无依据表=[]"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        }
+      }
+    },
+    {
+      "id": 4,
+      "name": "小板订单（dwd_tu_order_all 过滤 order_type=1）",
+      "category": "regression",
+      "difficulty": null,
+      "question": "统计小板订单的订单量",
+      "ok": true,
+      "error": "",
+      "sql": "SELECT COUNT(*) AS \"订单量\" FROM ctc_data_warehouse.dwd_tu_order_all WHERE order_type = 1 AND toYear(toDateTime(ctime)) = 2026",
+      "tables": [
+        "ods_tu_order_pricing_record_all",
+        "dwd_tu_order_all"
+      ],
+      "metrics": [
+        "订单量"
+      ],
+      "understanding": {
+        "intent": "summary",
+        "metrics": [
+          "订单量"
+        ],
+        "entities": [
+          "小板订单表"
+        ],
+        "dimensions": [],
+        "time_range": "",
+        "filters": [],
+        "ambiguity": "指标清单中无“小板订单量”，按“订单量”理解；实体清单中无“小板订单”，按“小板订单表”理解",
+        "degraded": false
+      },
+      "answer": "小板订单的订单量为 1,139,924 单。该数字表示按订单量口径统计的小板订单表记录总数，即每一条订单记录计为 1 单。\n\n注：本次按“订单量 = COUNT(*)”口径，并将“小板订单”理解为“小板订单表”进行计算。",
+      "validation": [],
+      "rows_preview": [
+        [
+          1139924
+        ]
+      ],
+      "latency": 4.67,
+      "trace": [
+        {
+          "step": "enrich",
+          "ms": 0.0
+        },
+        {
+          "step": "understand",
+          "ms": 703.6
+        },
+        {
+          "step": "retrieve",
+          "ms": 55.3
+        },
+        {
+          "step": "resolve_prompt",
+          "ms": 4.5
+        },
+        {
+          "step": "generate",
+          "ms": 660.4
+        },
+        {
+          "step": "validate",
+          "ms": 2.2
+        },
+        {
+          "step": "execute",
+          "ms": 268.2
+        },
+        {
+          "step": "result_validate_answer",
+          "ms": 2974.7
+        }
+      ],
+      "scores": {
+        "ok": {
+          "status": true,
+          "detail": "ok=True 期望=True error="
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": true,
+          "detail": "缺表=[] 实际=['ods_tu_order_pricing_record_all', 'dwd_tu_order_all']"
+        },
+        "metrics": {
+          "status": null,
+          "detail": ""
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": true,
+          "detail": "SQL缺谓词=[]"
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": ""
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "format": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无依据表=[]"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        }
+      }
+    },
+    {
+      "id": 5,
+      "name": "大板订单量",
+      "category": "regression",
+      "difficulty": null,
+      "question": "统计大板订单的订单量",
+      "ok": true,
+      "error": "",
+      "sql": "SELECT COUNT(*) AS \"大板订单量\" FROM ctc_data_warehouse.ods_tu_large_handcart_order_all WHERE order_time >= '2025-09-08 00:00:00' AND order_time < '2026-10-09 00:00:00'",
+      "tables": [
+        "ods_tu_large_handcart_order_statistics_all",
+        "ods_tu_large_handcart_order_all"
+      ],
+      "metrics": [
+        "大板订单金额",
+        "大板订单量"
+      ],
+      "understanding": {
+        "intent": "summary",
+        "metrics": [
+          "大板订单量"
+        ],
+        "entities": [
+          "大板订单"
+        ],
+        "dimensions": [],
+        "time_range": "",
+        "filters": [],
+        "ambiguity": "",
+        "degraded": false
+      },
+      "answer": "本次大板运输订单的下单总笔数为 244,887 笔。该结果反映的是大板运输订单的订单量规模，按订单笔数统计。\n\n注：本次按“大板运输订单的下单总笔数”口径计算，即统计大板运输订单的订单量。",
+      "validation": [],
+      "rows_preview": [
+        [
+          244887
+        ]
+      ],
+      "latency": 4.1,
+      "trace": [
+        {
+          "step": "enrich",
+          "ms": 0.0
+        },
+        {
+          "step": "understand",
+          "ms": 395.9
+        },
+        {
+          "step": "retrieve",
+          "ms": 40.8
+        },
+        {
+          "step": "resolve_prompt",
+          "ms": 5.1
+        },
+        {
+          "step": "generate",
+          "ms": 823.6
+        },
+        {
+          "step": "validate",
+          "ms": 1.4
+        },
+        {
+          "step": "execute",
+          "ms": 287.4
+        },
+        {
+          "step": "result_validate_answer",
+          "ms": 2542.6
+        }
+      ],
+      "scores": {
+        "ok": {
+          "status": true,
+          "detail": "ok=True 期望=True error="
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": true,
+          "detail": "缺表=[] 实际=['ods_tu_large_handcart_order_statistics_all', 'ods_tu_large_handcart_order_all']"
+        },
+        "metrics": {
+          "status": null,
+          "detail": ""
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": ""
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "format": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无依据表=[]"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        }
+      }
+    },
+    {
+      "id": 6,
+      "name": "客服调度身份（is_service_staff 字典）",
+      "category": "regression",
+      "difficulty": null,
+      "question": "统计各客服调度身份的订单量",
+      "ok": false,
+      "error": "无法回答：现有表结构不足以计算（缺少客服调度身份与订单的关联字段，dwd_tu_order_all 中仅有发单身份 is_service_staff，无法区分具体客服调度人员）",
+      "sql": "-- 无法回答：现有表结构不足以计算（缺少客服调度身份与订单的关联字段，dwd_tu_order_all 中仅有发单身份 is_service_staff，无法区分具体客服调度人员）",
+      "tables": [
+        "dwd_tu_order_all",
+        "ods_valet_order_all",
+        "ods_tu_large_handcart_order_all",
+        "ods_tu_customer_all"
+      ],
+      "metrics": [
+        "订单量",
+        "大板订单量",
+        "代驾订单量"
+      ],
+      "understanding": {
+        "intent": "summary",
+        "metrics": [
+          "订单量"
+        ],
+        "entities": [],
+        "dimensions": [
+          "客服调度身份"
+        ],
+        "time_range": "",
+        "filters": [],
+        "ambiguity": "“客服调度身份”未在可用业务实体清单中，按分组维度处理；未指定时间范围，默认统计全部时间。",
+        "degraded": false
+      },
+      "answer": null,
+      "validation": null,
+      "rows_preview": [],
+      "latency": 1.86,
+      "trace": null,
+      "scores": {
+        "ok": {
+          "status": false,
+          "detail": "ok=False 期望=True error=无法回答：现有表结构不足以计算（缺少客服调度身份与订单的关联字段，dwd_tu_order_all 中仅有发单身份 is_service_staff，无法区分具"
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": null,
+          "detail": ""
+        },
+        "metrics": {
+          "status": null,
+          "detail": ""
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": true,
+          "detail": "SQL缺谓词=[]"
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": ""
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "format": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        }
+      }
+    },
+    {
+      "id": 7,
+      "name": "代驾调度发单（is_service_staff=2）",
+      "category": "regression",
+      "difficulty": null,
+      "question": "统计代驾调度发单的订单量",
+      "ok": true,
+      "error": "",
+      "sql": "SELECT COUNT(*) AS \"代驾发单订单量\" FROM ctc_data_warehouse.ods_valet_order_all WHERE order_time >= '2026-09-08 00:00:00' AND order_time < '2026-10-08 00:00:00'",
+      "tables": [
+        "ods_valet_order_all"
+      ],
+      "metrics": [
+        "代驾订单量"
+      ],
+      "understanding": {
+        "intent": "summary",
+        "metrics": [
+          "订单量"
+        ],
+        "entities": [
+          "代驾订单"
+        ],
+        "dimensions": [],
+        "time_range": "",
+        "filters": [
+          "调度单"
+        ],
+        "ambiguity": "“调度发单”未在权威指标/实体中直接命中，按“调度单”作为过滤条件理解；未指定时间范围，默认全量统计。",
+        "degraded": false
+      },
+      "answer": "本次统计的代驾调度发单订单量为 4068 单。该数字表示按“调度单”作为过滤条件后，代驾订单的下单总笔数，未涉及其他比率指标。\n\n注：本次按“调度单”理解“调度发单”，且未指定时间范围，默认按全量数据统计。",
+      "validation": [],
+      "rows_preview": [
+        [
+          4068
+        ]
+      ],
+      "latency": 4.97,
+      "trace": [
+        {
+          "step": "enrich",
+          "ms": 0.0
+        },
+        {
+          "step": "understand",
+          "ms": 1265.7
+        },
+        {
+          "step": "retrieve",
+          "ms": 56.6
+        },
+        {
+          "step": "resolve_prompt",
+          "ms": 4.9
+        },
+        {
+          "step": "generate",
+          "ms": 808.3
+        },
+        {
+          "step": "validate",
+          "ms": 2.0
+        },
+        {
+          "step": "execute",
+          "ms": 264.7
+        },
+        {
+          "step": "result_validate_answer",
+          "ms": 2568.1
+        }
+      ],
+      "scores": {
+        "ok": {
+          "status": true,
+          "detail": "ok=True 期望=True error="
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": null,
+          "detail": ""
+        },
+        "metrics": {
+          "status": null,
+          "detail": ""
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": false,
+          "detail": "SQL缺谓词=['is_service_staff = 2']"
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": ""
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "format": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无依据表=[]"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        }
+      }
+    },
+    {
+      "id": 8,
+      "name": "2025 注册客户/司机/发单客户（三表去重）",
+      "category": "regression",
+      "difficulty": null,
+      "question": "查询2025年全年的注册客户数，注册司机数，发单客户数",
+      "ok": true,
+      "error": "",
+      "sql": "SELECT (SELECT COUNT(DISTINCT id) FROM ctc_data_warehouse.ods_tu_customer_all WHERE create_data_time >= '2025-01-01 00:00:00' AND create_data_time < '2026-01-01 00:00:00') AS \"注册客户数\", (SELECT COUNT(DISTINCT id) FROM ctc_data_warehouse.ods_tu_driver_all WHERE create_data_time >= '2025-01-01 00:00:00' AND create_data_time < '2026-01-01 00:00:00') AS \"注册司机数\", (SELECT COUNT(DISTINCT customer) FROM (SELECT customer_id AS customer FROM ctc_data_warehouse.ods_tu_large_handcart_order_all WHERE order_time >= '2025-01-01 00:00:00' AND order_time < '2026-01-01 00:00:00' UNION DISTINCT SELECT customer FROM ctc_data_warehouse.dwd_tu_order_all WHERE order_type = 1 AND toDateTime(ctime) >= '2025-01-01 00:00:00' AND toDateTime(ctime) < '2026-01-01 00:00:00' UNION DISTINCT SELECT customer_id AS customer FROM ctc_data_warehouse.ods_valet_order_all WHERE order_time >= '2025-01-01 00:00:00' AND order_time < '2026-01-01 00:00:00')) AS \"发单客户数\"",
+      "tables": [
+        "ods_tu_customer_all",
+        "ods_tu_driver_all",
+        "ods_tu_large_handcart_order_all",
+        "dwd_tu_order_all",
+        "ods_valet_order_all"
+      ],
+      "metrics": [
+        "注册司机数",
+        "注册客户数",
+        "发单客户数"
+      ],
+      "understanding": {
+        "intent": "summary",
+        "metrics": [
+          "注册客户数",
+          "注册司机数",
+          "发单客户数"
+        ],
+        "entities": [],
+        "dimensions": [],
+        "time_range": "2025-01-01~2025-12-31",
+        "filters": [],
+        "ambiguity": "",
+        "degraded": false
+      },
+      "answer": "2025年全年，平台新注册客户数为1,032,473人，新注册司机数为280,233人，当年发过单的客户数为323,980人。也就是说，全年注册客户规模明显高于注册司机规模，而实际发单客户数约占注册客户数的31.4%，说明当年新注册客户中约有三成左右在年内产生了发单行为。\n\n注：本次按“注册客户/司机取对应表 create_data_time 所在年份、发单客户取大板/小板/代驾三业务线订单发单客户去重后所在年份”的口径计算。",
+      "validation": [],
+      "rows_preview": [
+        [
+          1032473,
+          280233,
+          323980
+        ]
+      ],
+      "latency": 8.24,
+      "trace": [
+        {
+          "step": "enrich",
+          "ms": 0.0
+        },
+        {
+          "step": "understand",
+          "ms": 544.7
+        },
+        {
+          "step": "retrieve",
+          "ms": 47.8
+        },
+        {
+          "step": "resolve_prompt",
+          "ms": 7.3
+        },
+        {
+          "step": "generate",
+          "ms": 1266.3
+        },
+        {
+          "step": "validate",
+          "ms": 11.3
+        },
+        {
+          "step": "execute",
+          "ms": 2468.8
+        },
+        {
+          "step": "result_validate_answer",
+          "ms": 3889.0
+        }
+      ],
+      "scores": {
+        "ok": {
+          "status": true,
+          "detail": "ok=True 期望=True error="
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": true,
+          "detail": "缺表=[] 实际=['ods_tu_customer_all', 'ods_tu_driver_all', 'ods_tu_large_handcart_order_all', 'dwd_tu_order_all', 'ods_valet_order_all']"
+        },
+        "metrics": {
+          "status": true,
+          "detail": "缺指标=[] 实际=['注册司机数', '注册客户数', '发单客户数']"
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": ""
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "format": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无依据表=[]"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        }
+      }
+    },
+    {
+      "id": 9,
+      "name": "国庆假期区间（2025 官方安排）+ 小板订单 → 区间必须落进 SQL",
+      "category": "regression",
+      "difficulty": null,
+      "question": "2025年国庆假期期间小板订单的订单量",
+      "ok": true,
+      "error": "",
+      "sql": "SELECT COUNT(*) AS \"订单量\" FROM ctc_data_warehouse.dwd_tu_order_all WHERE order_type = 1 AND ctime >= toUnixTimestamp('2025-10-01 00:00:00') AND ctime < toUnixTimestamp('2025-10-09 00:00:00')",
+      "tables": [
+        "ods_tu_order_pricing_record_all",
+        "dwd_tu_order_all"
+      ],
+      "metrics": [
+        "订单量"
+      ],
+      "understanding": {
+        "intent": "summary",
+        "metrics": [
+          "订单量"
+        ],
+        "entities": [
+          "小板订单表"
+        ],
+        "dimensions": [],
+        "time_range": "2025-10-01~2025-10-07",
+        "filters": [],
+        "ambiguity": "国庆假期具体天数未明确，按通常7天（2025-10-01至2025-10-07）理解；若含调休或中秋（2025-10-06）重叠，范围可能不同。",
+        "degraded": false
+      },
+      "answer": "2025年国庆假期期间，小板订单的订单量为34,133单。该数字为假期内所有小板订单的累计下单笔数，反映的是整体订单规模，不涉及同比或环比变化。\n\n注：本次按通常7天假期（2025-10-01至2025-10-07）口径计算，若实际假期天数或调休安排不同，订单量可能有所变化。",
+      "validation": [],
+      "rows_preview": [
+        [
+          34133
+        ]
+      ],
+      "latency": 5.1,
+      "trace": [
+        {
+          "step": "enrich",
+          "ms": 0.0
+        },
+        {
+          "step": "understand",
+          "ms": 797.2
+        },
+        {
+          "step": "retrieve",
+          "ms": 60.2
+        },
+        {
+          "step": "resolve_prompt",
+          "ms": 5.5
+        },
+        {
+          "step": "generate",
+          "ms": 841.4
+        },
+        {
+          "step": "validate",
+          "ms": 2.5
+        },
+        {
+          "step": "execute",
+          "ms": 273.3
+        },
+        {
+          "step": "result_validate_answer",
+          "ms": 3120.2
+        }
+      ],
+      "scores": {
+        "ok": {
+          "status": true,
+          "detail": "ok=True 期望=True error="
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": true,
+          "detail": "缺表=[] 实际=['ods_tu_order_pricing_record_all', 'dwd_tu_order_all']"
+        },
+        "metrics": {
+          "status": true,
+          "detail": "缺指标=[] 实际=['订单量']"
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": true,
+          "detail": ""
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "format": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无依据表=[]"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        }
+      }
+    },
+    {
+      "id": 10,
+      "name": "国庆假期（当年）+ 指标含糊 → 必须按默认口径答出来（不得拒答）",
+      "category": "regression",
+      "difficulty": null,
+      "question": "查询分析国庆假期期间小板订单的数据",
+      "ok": true,
+      "error": "",
+      "sql": "SELECT COUNT(*) AS \"订单量\", COALESCE(SUM(CASE WHEN is_picked = 1 THEN 1 ELSE 0 END), 0) AS \"接单量\", COALESCE(SUM(CASE WHEN status = 6 THEN 1 ELSE 0 END), 0) AS \"完单量\", round(COALESCE(SUM(CASE WHEN status = 6 THEN 1 ELSE 0 END) * 1.0 / COUNT(*), 0), 4) AS \"完单率\", round(COALESCE(SUM(total), 0), 2) AS \"订单总金额\", round(COALESCE(SUM(CASE WHEN status = 6 THEN total ELSE 0 END), 0), 2) AS \"完单总金额\" FROM ctc_data_warehouse.dwd_tu_order_all WHERE order_type = 1 AND toDateTime(ctime) >= '2026-10-01 00:00:00' AND toDateTime(ctime) < '2026-10-08 00:00:00'",
+      "tables": [
+        "ods_tu_order_pricing_record_all",
+        "dwd_tu_order_all",
+        "ods_tu_customer_all"
+      ],
+      "metrics": [
+        "询价后发单率"
+      ],
+      "understanding": {
+        "intent": "summary",
+        "metrics": [],
+        "entities": [
+          "小板订单表"
+        ],
+        "dimensions": [],
+        "time_range": "2026-10-01~2026-10-07",
+        "filters": [],
+        "ambiguity": "国庆假期具体天数未明确，按惯例取10月1日至10月7日；'数据'未指明具体指标，故metrics留空",
+        "degraded": false
+      },
+      "answer": "国庆假期期间（10月1日至10月7日）小板订单共产生 26625 单，其中接单 16531 单，最终完单 7067 单，完单率为 26.54%，即每 100 个订单中约有 27 个最终完成。金额方面，订单总金额约 2438.23 万元，完单总金额约 503.15 万元，完单金额占订单总金额的比例约两成，说明假期内下单规模较大，但实际转化完成的金额占比相对有限。\n\n注：本次按国庆假期为10月1日至10月7日、且未指定具体指标口径（以订单量、接单量、完单量、完单率及金额为统计维度）的假设计算。",
+      "validation": [],
+      "rows_preview": [
+        [
+          26625,
+          16531,
+          7067,
+          0.2654,
+          "24382262.00",
+          "5031470.00"
+        ]
+      ],
+      "latency": 7.51,
+      "trace": [
+        {
+          "step": "enrich",
+          "ms": 0.0
+        },
+        {
+          "step": "understand",
+          "ms": 825.5
+        },
+        {
+          "step": "retrieve",
+          "ms": 45.8
+        },
+        {
+          "step": "resolve_prompt",
+          "ms": 7.6
+        },
+        {
+          "step": "generate",
+          "ms": 1291.4
+        },
+        {
+          "step": "validate",
+          "ms": 6.3
+        },
+        {
+          "step": "execute",
+          "ms": 265.0
+        },
+        {
+          "step": "result_validate_answer",
+          "ms": 5070.1
+        }
+      ],
+      "scores": {
+        "ok": {
+          "status": true,
+          "detail": "ok=True 期望=True error="
+        },
+        "abstain": {
+          "status": true,
+          "detail": "abstain=False 期望=False"
+        },
+        "tables": {
+          "status": true,
+          "detail": "缺表=[] 实际=['ods_tu_order_pricing_record_all', 'dwd_tu_order_all', 'ods_tu_customer_all']"
+        },
+        "metrics": {
+          "status": null,
+          "detail": ""
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": ""
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "format": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无依据表=[]"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        }
+      }
+    },
+    {
+      "id": 11,
+      "name": "代驾司机激活费 —— 卫星表不能被实体过滤误杀",
+      "category": "regression",
+      "difficulty": null,
+      "question": "查询9月份代驾司机缴纳激活费的数量及激活费金额",
+      "ok": true,
+      "error": "",
+      "sql": "SELECT COUNT(DISTINCT driver_id) AS \"缴纳激活费司机数\", COALESCE(SUM(activation_fee_amount), 0) AS \"激活费金额\" FROM ctc_data_warehouse.ods_valet_driver_activation_fee_info_all WHERE payment_status = 1 AND create_time >= '2026-09-01 00:00:00' AND create_time < '2026-10-01 00:00:00'",
+      "tables": [
+        "ods_valet_driver_activation_fee_info_all",
+        "ods_valet_order_all"
+      ],
+      "metrics": [],
+      "understanding": {
+        "intent": "summary",
+        "metrics": [],
+        "entities": [],
+        "dimensions": [],
+        "time_range": "2026-09-01~2026-09-30",
+        "filters": [
+          "费用类型=激活费",
+          "司机类型=代驾司机"
+        ],
+        "ambiguity": "指标清单中无“激活费数量/激活费金额”对应指标，实体清单中也无“激活费”相关实体，故metrics与entities留空；默认9月指2026年9月。",
+        "degraded": false
+      },
+      "answer": "2026年9月，共有631名代驾司机缴纳了激活费，合计激活费金额为37,229.00元。也就是说，平均每位缴费司机对应约59元的激活费。\n\n注：本次按“9月指2026年9月”的假设计算，且因指标与实体清单中无“激活费”相关口径，结果直接取自查询返回的缴纳司机数与金额。",
+      "validation": [],
+      "rows_preview": [
+        [
+          631,
+          "37229.00"
+        ]
+      ],
+      "latency": 5.37,
+      "trace": [
+        {
+          "step": "enrich",
+          "ms": 0.2
+        },
+        {
+          "step": "understand",
+          "ms": 753.1
+        },
+        {
+          "step": "retrieve",
+          "ms": 61.6
+        },
+        {
+          "step": "resolve_prompt",
+          "ms": 6.2
+        },
+        {
+          "step": "generate",
+          "ms": 843.2
+        },
+        {
+          "step": "validate",
+          "ms": 3.6
+        },
+        {
+          "step": "execute",
+          "ms": 259.8
+        },
+        {
+          "step": "result_validate_answer",
+          "ms": 3445.2
+        }
+      ],
+      "scores": {
+        "ok": {
+          "status": true,
+          "detail": "ok=True 期望=True error="
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": true,
+          "detail": "缺表=[] 实际=['ods_valet_driver_activation_fee_info_all', 'ods_valet_order_all']"
+        },
+        "metrics": {
+          "status": null,
+          "detail": ""
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": ""
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "format": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无依据表=[]"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        }
+      }
+    },
+    {
+      "id": 12,
+      "name": "用户点名「资金流水表」→ 不得被实体过滤误杀",
+      "category": "regression",
+      "difficulty": null,
+      "question": "查询8月份资金流水表中 缴纳代驾审核激活费未退回的司机数及流水金额",
+      "ok": false,
+      "error": "无法回答：现有表结构不足以计算（ods_tu_record_all 缺少可识别\"代驾审核激活费\"的流水类型字段，ods_tu_record_type_all 与 ods_tu_record_all 之间无关联字段，无法确定哪些流水属于代驾审核激活费）",
+      "sql": "-- 无法回答：现有表结构不足以计算（ods_tu_record_all 缺少可识别\"代驾审核激活费\"的流水类型字段，ods_tu_record_type_all 与 ods_tu_record_all 之间无关联字段，无法确定哪些流水属于代驾审核激活费）",
+      "tables": [
+        "ods_valet_driver_activation_fee_info_all",
+        "ods_tu_record_all",
+        "ods_valet_order_all",
+        "ods_tu_record_type_all"
+      ],
+      "metrics": [],
+      "understanding": {
+        "intent": "summary",
+        "metrics": [],
+        "entities": [],
+        "dimensions": [],
+        "time_range": "2026-08-01~2026-08-31",
+        "filters": [
+          "资金流水类型=代驾审核激活费",
+          "状态=未退回"
+        ],
+        "ambiguity": "“资金流水表”不在可用业务实体清单中，未命中实体；“缴纳代驾审核激活费未退回的司机数及流水金额”未命中权威指标清单，故metrics留空；年份未明确，按当前年份2026年8月理解。",
+        "degraded": false
+      },
+      "answer": null,
+      "validation": null,
+      "rows_preview": [],
+      "latency": 2.03,
+      "trace": null,
+      "scores": {
+        "ok": {
+          "status": false,
+          "detail": "ok=False 期望=True error=无法回答：现有表结构不足以计算（ods_tu_record_all 缺少可识别\"代驾审核激活费\"的流水类型字段，ods_tu_record_type_all 与"
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": true,
+          "detail": "缺表=[] 实际=['ods_valet_driver_activation_fee_info_all', 'ods_tu_record_all', 'ods_valet_order_all', 'ods_tu_record_type_all']"
+        },
+        "metrics": {
+          "status": null,
+          "detail": ""
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": ""
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "format": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        }
+      }
+    }
+  ]
+}

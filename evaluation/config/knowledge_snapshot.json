@@ -1,0 +1,1258 @@
+{
+  "prompts": {
+    "role": "你是一名资深数据分析师，负责把用户的自然语言问题转换成 {dialect} SQL。\n\n# 通用默认与歧义消解（仅当问题未明确说明时生效）\n1. 时间默认：问题只说\"X月\"没给年份 → 默认当前年份的 X 月；\"本月/当月\"→ 当前自然月；\"今年\"→ 当前自然年。\n2. 城市维度默认：提到\"城市订单\"而未指定起点/终点 → 优先按订单【起点城市（出发城市）】统计。\n3. 未指定时间范围且无任何时间锚点 → 默认近 30 天，并在 SQL 注释里提示所采用的默认区间。\n4. 优先采用系统提供的【权威指标定义】和【实体与关联规则】，不要自行发明字段、条件或 Join 方式。\n5. 只输出 SQL 本身；无法回答时按系统规则以 \"-- 无法回答：…\" 注释说明。",
+    "sql_rules": "# 规则\n1. 只能使用上面提供的表和字段，禁止编造不存在的表和字段\n2. 只能生成 SELECT 查询，禁止 DELETE / UPDATE / DROP / INSERT\n3. 时间范围一律用左闭右开：create_time >= '起始' AND create_time < '结束'\n   ★ 若用户只给了起始时间（如\"从2026年6月1日开始\"）、没明确结束时间，\n     则只写 >= 起始，不要自行补结束上限（即取到最新数据为止）。\n4. 统计数量用 COUNT(*)\n5. 只输出 SQL，不要任何解释，不要用 ``` 包裹\n6. 计算比率时，用 CASE WHEN 分别统计分子分母，禁止把分子条件写进 WHERE\n   错误写法：WHERE status = 7 AND 时间   → 分母被提前过滤，结果恒等于 100%\n   正确写法：SUM(CASE WHEN status = 7 THEN 1 ELSE 0 END) / COUNT(*)\n7. 聚合函数或除法表达式，必须用 COALESCE(整个表达式, 0) 包住，避免空结果返回 NULL\n   ★ 注意位置：COALESCE 要套在【最外层】\n     错误：COALESCE(SUM(x), 0) / COUNT(*)      → 空表时仍是 NULL（除零了）\n     正确：COALESCE(SUM(x) * 1.0 / COUNT(*), 0)\n   ★ 整数相除请乘 1.0：SUM(x) * 1.0 / COUNT(*)，避免被截断成 0\n8. 需要对比多个时间段时，必须用 SUM(CASE WHEN ... THEN 1 ELSE 0 END) 横向并排输出多列\n   ★ 禁止用 UNION ALL（会输出多行，列名还会错位）\n   ★ 禁止用 GROUP BY（会输出多行，不符合对比场景的列结构约定）\n9. ★ 只能查询上面列出的表，严禁凭记忆写出未列出的表名。\n   只有确实无法回答时才输出\"-- 无法回答：…\"，并按真实原因选择措辞：\n   (a) 表未授权/不存在：问题需要的业务数据根本不在已列出的表中（未授权或库中无此表）\n       → 输出：-- 无法回答：所需数据表不在已授权范围内\n   (b) 表都在，但现有字段和口径仍算不出来（如缺少关键字段、口径无法解析）\n       → 输出：-- 无法回答：现有表结构不足以计算（简短说明缺什么，如\"缺少发单时间字段\"）\n   注意：若表已列出、字段含义可从注释推断，请尽量生成 SQL，不要轻言无法回答；\n   不要使用\"无权限\"这类表述，除非 (a) 真的发生。\n10. ★ 列的别名（AS 后面）只能用英文、数字、下划线，绝对不要用裸中文\n    错误：SELECT SUM(x) AS 完单量 FROM t     → ClickHouse 直接语法报错(code 62)\n    正确：SELECT SUM(x) AS order_count FROM t\n    若确实需要中文列名，必须用反引号包起来：AS `完单量`\n    （这条踩过坑：中文别名让每条查询都白跑一次模型重试，翻倍延迟和成本）\n11. ★ 时间戳类型（高频易错）：本库 ctime 类字段（dwd_tu_order_all.ctime、\n    ods_tu_customer_all.ctime）是 Int32 秒级时间戳，不是 DateTime。参与 dateDiff /\n    日期运算前必须 toDateTime(字段) 转换（如 toDateTime(ctime)）；\n    ods_tu_order_pricing_record_all.pricing_time 是 DateTime，可直接用。\n    类型不匹配会被 ClickHouse 拒绝（code 43: Illegal type for dateDiff）。\n12. ★ 禁止使用 SETTINGS 子句（如 SETTINGS join_algorithm / max_memory_usage 等）。\n    这类执行参数由系统统一控制，模型不要写；写在末尾会导致 LIMIT 注入位置非法\n    （code 62 语法错误）。你只需写纯 SELECT 查询体即可。\n13. ★ 嵌套子查询（FROM (SELECT ...) AS x / WITH ... AS x）的【别名作用域】铁律：\n    每一层子查询的 SELECT 列表，只能用【本层 FROM/JOIN 里定义的表别名 + 它们的真实列】，\n    不得引用尚未定义的列别名，也不得引用外层子查询的别名。\n    - 对齐键（用于最外层 LEFT JOIN ON 的键，如按日期对齐）必须在【每个子查询内部】\n      用本层真实列显式算出来并起相同名字，例如都写：\n        toDate(toDateTime(c.ctime)) AS stat_date\n      而绝不能写 `c.stat_date`（c 是客户表，根本没有 stat_date 列 → code 47 报错）。\n    - 最外层 SELECT 才能引用子查询别名，如 `c_stat.stat_date` / `o1.order_users_1d`。\n    - 自查：子查询内部的 SELECT 里若出现\"本层 FROM 的表没有的列名\"，就是引用了\n      外层别名或尚未定义的别名，必须改成本层真实列表达式。\n14. ★ JOIN 的 ON 子句【只能写等值条件】（如 `a.customer = b.customer`）。\n    ClickHouse 不支持在 JOIN ON 里写不等号 / 函数比较（如 `dateDiff(...) >= 0`、\n    `toDateTime(a.ctime) < b.pricing_time`），会报 code 403 Unsupported JOIN ON conditions。\n    时间窗口 / 不等式判断必须放在：\n      (a) WHERE 子句（先按等值 JOIN 展开后过滤），或\n      (b) 聚合函数里的 CASE WHEN（如 countIf(dateDiff('day', p.pricing_time, toDateTime(o.ctime)) >= 0)）。\n    同理，需要\"某时间之后\"的关联（如询价后发单），用 `LEFT JOIN ... ON o.customer = p.customer`\n    等值关联，再用 WHERE/CASE WHEN 判时间先后，不能把时间不等式写进 ON。\n15. ★ 防笛卡尔放大范式（多表算\"率\"的铁律；违反会明细×明细行数乘积暴涨 → 内存爆炸 code 241 / 超时 code 159）：\n    凡是【客户表 × 订单表 × 询价表】这类多表算率，绝不允许把「订单明细」和「询价明细」直接 JOIN\n    （明细×明细 = 笛卡尔放大，行数随各表记录数乘积爆炸）。正确步骤：\n      (a) 先用 CTE 取「基准集」——如每天的新注册用户：\n            new_users AS (SELECT id AS customer,\n                                 toDate(toDateTime(ctime)) AS reg_date,\n                                 toStartOfMonth(toDateTime(ctime)) AS reg_month\n                          FROM ods_tu_customer_all WHERE <时间范围>)\n      (b) 订单、询价【各自先按 customer 预聚合（GROUP BY customer）】，再 1:1 JOIN 回基准集：\n            - 订单预聚合：每个客户一次性算出 1/3/7 天发单标记（用 max(bool) 聚合，一次出多窗口，\n              不要写多个子查询）：\n                max(dateDiff('day', u.reg_date, toDate(toDateTime(o.ctime))) <= 1) AS has_1d\n            - 询价预聚合：每个客户取「注册当月第一次询价时间」并只关联新用户：\n                min(p.pricing_time) AS first_pricing_time\n                WHERE toStartOfMonth(p.pricing_time) = u.reg_month\n      (c) 最后 new_users LEFT JOIN 各预聚合结果（都是 customer 维度 1:1），按 reg_date 汇总输出。\n    ★ 时间窗口 / 不等式判断一律放进【聚合函数内的比较】或 WHERE；JOIN ON 只写等值（见规则14）。\n    ★ 自查：若 SQL 里出现「询价明细表 JOIN 订单明细表」且双方都没先 GROUP BY customer，\n          就是笛卡尔放大，必须改成「各自预聚合后再 1:1 关联」。\n16. ★ 取「自然月/月初」必须用 toStartOfMonth(日期)，【禁止】dateTrunc('MONTH', ...) / dateTrunc('month', ...)。\n    本库 ClickHouse 版本不认 MONTH 作为 datepart 名称，会报 code 36 (BAD_ARGUMENTS:\n    MONTH doesn't look like datepart name in dateTrunc)。\n    同理：取年初用 toStartOfYear(日期)、取日初用 toStartOfDay(日期)、取周初用 toStartOfWeek(日期)。\n    ★ 正确示例：toStartOfMonth(toDateTime(ctime)) AS reg_month（绝不要写成 dateTrunc('MONTH', ctime)）。\n17. ★ 所有「率 / 占比 / 比例」类字段（列名含 rate / ratio / 率 / 占比 / 比例，或语义是比率）默认保留【小数点后 4 位】：用 round(比率表达式, 4) 包裹。\n    例：发单率写成 round(COALESCE(SUM(has_1d) * 1.0 / COUNT(*), 0), 4) AS rate_1d。\n    除法一定要先 * 1.0（或 / 1.0）保证出小数，再 round(..., 4)；不要保留 6 位以上多余小数，也不要截断成整数。\n    默认输出小数形式（如 0.1234），【不要】乘成百分比（如 12.34%），除非用户明确要求\"百分比 / 百分号\"。\n    适用：发单率、询价后发单率、转化率、留存率、占比等一切比率指标。\n18. ★ 生成的 SQL 每个 SELECT 输出列都要带【有业务含义的中文别名】（用反引号包裹，例如 `统计日期`、`新注册用户数`、`1天内发单率`），方便阅读与复制到外部工具。注意：中文别名必须反引号包裹（见规则10），禁止裸中文；维度列也允许英文别名，但计算/比率列强烈建议中文别名。\n\n    19. ★ 发单/活跃时间窗口必须【排除注册前】订单（下界约束），禁止只写 `<= N`：\n        `dateDiff('day', 注册日, 订单日) <= N` 当订单时间在注册之前时，差为负，仍满足 `<=N`，\n        会把注册前的历史订单误算成「注册后发单」。正确写法二选一：\n        ① 在订单 CTE 加 `WHERE toDateTime(o.ctime) >= toDateTime(u.ctime)`（最直观）；\n        ② 用 `dateDiff('day', 注册日, 订单日) BETWEEN 0 AND N`。\n        （「N日内」是否含注册当天第 0 天按业务口径；但【下界 0 / >= 注册时刻】是逻辑正确性，必须保留。）\n\n\n    20. ★ 费用明细表 JOIN 铁律（算「信息费 / 服务费」等费用指标时必看，违反会一对多放大污染所有指标）：\n        大板订单费用来自 ods_tu_large_handcart_order_statistics_all（信息费字段 actual_pay_information_fee）；\n        代驾订单费用来自 ods_valet_fee_detail_all（信息费/平台服务费字段 service_fee）；\n        两张费用明细表都通过 order_no 关联各自订单主表。\n        ★ 绝对禁止把【费用明细表直接 LEFT JOIN 订单主表】再对订单表其他字段聚合 ——\n          一个 order_no 在费用明细表可能有多条记录，明细×明细会产生一对多放大，\n          订单量/订单金额/完单量/完单金额/完单率全部被重复计数虚高。\n        ★ 正确范式：先对费用明细表按 order_no 预聚合（SUM(费用) GROUP BY order_no）成子查询/CTE，\n          再与订单主表 1:1 LEFT JOIN：\n            fee AS (SELECT order_no, SUM(information_fee) AS information_fee\n                    FROM ods_tu_large_handcart_order_fee_detail_all GROUP BY order_no)\n            LEFT JOIN fee ON o.order_no = fee.order_no\n          信息费列取 COALESCE(fee.information_fee, 0)；代驾同理取 COALESCE(fee.service_fee, 0)。\n        ★ 大板信息费不可置 NULL / 0 占位——必须 JOIN 费用明细表取 information_fee；\n          若确实某类业务无信息费口径，需在回答中说明，但默认都按上述关联取数。"
+  },
+  "metrics": [
+    {
+      "name": "GMV",
+      "keywords": [
+        "gmv",
+        "成交金额",
+        "成交额"
+      ],
+      "definition": "GMV = COALESCE(SUM(CASE WHEN status = 6 THEN total ELSE 0 END), 0)\n  只统计已完成订单的金额",
+      "doc": "GMV：成交总额、成交额、交易额，已完成订单的金额总和",
+      "tables": [
+        "dwd_tu_order_all"
+      ],
+      "enabled": true,
+      "metric_type": null,
+      "priority": 1,
+      "sql_template": "",
+      "depends_metrics": [],
+      "conflict_key": ""
+    },
+    {
+      "name": "代驾信息费",
+      "keywords": [
+        "代驾信息费",
+        "代驾平台费",
+        "代驾服务费",
+        "代驾订单",
+        "信息费"
+      ],
+      "definition": "代驾订单的信息费（平台服务费）合计，来自费用明细表 service_fee（按 order_no 关联）。",
+      "doc": "SELECT sum(f.service_fee) FROM ods_valet_order_all o JOIN ods_valet_fee_detail_all f ON o.order_no=f.order_no。",
+      "tables": [
+        "ods_valet_order_all",
+        "ods_valet_fee_detail_all"
+      ],
+      "enabled": true,
+      "metric_type": null,
+      "priority": 1,
+      "sql_template": "",
+      "depends_metrics": [],
+      "conflict_key": ""
+    },
+    {
+      "name": "代驾完单率",
+      "keywords": [
+        "代驾完单率",
+        "代驾完成率",
+        "代驾完单",
+        "完单率"
+      ],
+      "definition": "代驾完单量 ÷ 代驾订单量。",
+      "doc": "round(countIf(o.status=40>0)/count(),4)；或 = 代驾完单量/代驾订单量。",
+      "tables": [
+        "ods_valet_order_all"
+      ],
+      "enabled": true,
+      "metric_type": null,
+      "priority": 1,
+      "sql_template": "",
+      "depends_metrics": [],
+      "conflict_key": ""
+    },
+    {
+      "name": "代驾完单量",
+      "keywords": [
+        "代驾完单量",
+        "代驾完成订单量",
+        "代驾完单",
+        "完单量"
+      ],
+      "definition": "代驾订单中状态为「已完成」的订单笔数（status=40）。",
+      "doc": "SELECT count(distinct o.order_no) FROM ods_valet_order_all o WHERE o.status=40。",
+      "tables": [
+        "ods_valet_order_all"
+      ],
+      "enabled": true,
+      "metric_type": null,
+      "priority": 1,
+      "sql_template": "",
+      "depends_metrics": [],
+      "conflict_key": ""
+    },
+    {
+      "name": "代驾完单金额",
+      "keywords": [
+        "代驾完单金额",
+        "代驾完成订单金额",
+        "代驾完单",
+        "完单金额"
+      ],
+      "definition": "代驾订单中已完成（status=40）的订单金额合计。",
+      "doc": "SELECT sum(o.order_amount) FROM ods_valet_order_all o WHERE o.status=40。",
+      "tables": [
+        "ods_valet_order_all"
+      ],
+      "enabled": true,
+      "metric_type": null,
+      "priority": 1,
+      "sql_template": "",
+      "depends_metrics": [],
+      "conflict_key": ""
+    },
+    {
+      "name": "代驾订单量",
+      "keywords": [
+        "代驾订单量",
+        "代驾下单量",
+        "代驾订单数",
+        "代驾订单",
+        "订单量"
+      ],
+      "definition": "代驾订单的下单总笔数。",
+      "doc": "SELECT count(distinct o.order_no) FROM ods_valet_order_all o。",
+      "tables": [
+        "ods_valet_order_all"
+      ],
+      "enabled": true,
+      "metric_type": null,
+      "priority": 1,
+      "sql_template": "",
+      "depends_metrics": [],
+      "conflict_key": ""
+    },
+    {
+      "name": "代驾订单金额",
+      "keywords": [
+        "代驾订单金额",
+        "代驾成交额",
+        "代驾订单总额",
+        "代驾订单",
+        "订单金额"
+      ],
+      "definition": "代驾订单的订单金额合计（按 order_amount 求和）。",
+      "doc": "SELECT sum(o.order_amount) FROM ods_valet_order_all o。",
+      "tables": [
+        "ods_valet_order_all"
+      ],
+      "enabled": true,
+      "metric_type": null,
+      "priority": 1,
+      "sql_template": "",
+      "depends_metrics": [],
+      "conflict_key": ""
+    },
+    {
+      "name": "发单客户数",
+      "keywords": [
+        "发单客户数",
+        "发单客户",
+        "下单客户数",
+        "发单用户数"
+      ],
+      "definition": "指定时间段内，在大板/小板/代驾任一业务线发过单的去重客户数（只要在当年发过单即计入，不区分是否完单）。口径：将三张订单表的发单客户id取 UNION 后 COUNT(DISTINCT)：①大板 ods_tu_large_handcart_order_all.customer_id，按 toYear(order_time)=年份；②小板 dwd_tu_order_all.customer（必须加 order_type=1），按 toYear(toDateTime(ctime))=年份；③代驾 ods_valet_order_all.customer_id，按 toYear(order_time)=年份。注意三表客户id字段名不一致（customer_id / customer），UNION 时统一别名；用 UNION 而非 UNION ALL 去重。",
+      "doc": "跨业务线发单客户去重，按发单时间口径。",
+      "tables": [
+        "ods_tu_large_handcart_order_all",
+        "dwd_tu_order_all",
+        "ods_valet_order_all"
+      ],
+      "enabled": true,
+      "metric_type": null,
+      "priority": 1,
+      "sql_template": "",
+      "depends_metrics": [],
+      "conflict_key": ""
+    },
+    {
+      "name": "发单率",
+      "keywords": [
+        "发单率",
+        "注册后发单率",
+        "新客发单率"
+      ],
+      "definition": "发单率 = 注册后 N 日内产生至少一单的注册客户数 / 注册客户总数（N=1/3/7）。\n★ 必须按「防笛卡尔放大范式」（sql_rules 规则15）写，订单先按客户预聚合再 1:1 关联，禁止明细×明细。\n★ SELECT 输出列【一律用中文反引号别名】（见规则18），示例：`统计日期` / `新注册用户数` / `1天内发单用户数` / `1天内发单率` / `3天内发单用户数` / `3天内发单率` / `7天内发单用户数` / `7天内发单率`。\n★ ★ 发单窗口必须排除注册前订单（规则19）：order_stat 加 `WHERE toDateTime(o.ctime) >= toDateTime(u.ctime)`。\n  WITH new_users AS (\n      SELECT id AS customer, toDate(toDateTime(ctime)) AS reg_date\n      FROM ods_tu_customer_all\n      WHERE toDate(toDateTime(ctime)) >= '起始' AND toDate(toDateTime(ctime)) < '结束'\n  ),\n  order_stat AS (\n      SELECT o.customer,\n             max(dateDiff('day', u.reg_date, toDate(toDateTime(o.ctime))) <= 1) AS has_1d,\n             max(dateDiff('day', u.reg_date, toDate(toDateTime(o.ctime))) <= 3) AS has_3d,\n             max(dateDiff('day', u.reg_date, toDate(toDateTime(o.ctime))) <= 7) AS has_7d\n      FROM dwd_tu_order_all AS o\n      INNER JOIN new_users AS u ON u.customer = o.customer\n      WHERE toDateTime(o.ctime) >= toDateTime(u.ctime)   -- ★ 排除注册前订单（规则19）\n      GROUP BY o.customer\n  )\n  SELECT u.reg_date AS `统计日期`,\n         COUNT(*) AS `新注册用户数`,\n         SUM(os.has_1d) AS `1天内发单用户数`,\n         round(COALESCE(SUM(os.has_1d) * 1.0 / COUNT(*), 0), 4) AS `1天内发单率`,\n         SUM(os.has_3d) AS `3天内发单用户数`,\n         round(COALESCE(SUM(os.has_3d) * 1.0 / COUNT(*), 0), 4) AS `3天内发单率`,\n         SUM(os.has_7d) AS `7天内发单用户数`,\n         round(COALESCE(SUM(os.has_7d) * 1.0 / COUNT(*), 0), 4) AS `7天内发单率`\n  FROM new_users AS u\n  LEFT JOIN order_stat AS os ON os.customer = u.customer\n  GROUP BY u.reg_date ORDER BY u.reg_date\n★ 比率字段 rate_* 一律 round(...,4) 保留 4 位小数（sql_rules 规则17）。\n★ 字段类型：注册时间 ods_tu_customer_all.ctime（Int32 时间戳，须 toDateTime）、发单时间 dwd_tu_order_all.ctime（Int32 时间戳，须 toDateTime）、关联键 ods_tu_customer_all.id = dwd_tu_order_all.customer。",
+      "doc": "发单率：注册后 N 日内（1/3/7 天）产生至少一单的注册客户数占注册客户总数的比例；分新客维度按注册日统计",
+      "tables": [
+        "ods_tu_customer_all",
+        "dwd_tu_order_all",
+        "ods_user_register_detail_all"
+      ],
+      "enabled": true,
+      "metric_type": null,
+      "priority": 1,
+      "sql_template": "",
+      "depends_metrics": [],
+      "conflict_key": ""
+    },
+    {
+      "name": "取消率",
+      "keywords": [
+        "取消率",
+        "取消比例"
+      ],
+      "definition": "取消率 = COALESCE(SUM(CASE WHEN status = 7 THEN 1 ELSE 0 END) * 1.0 / COUNT(*), 0)\n  ★ COALESCE 必须套在【整个除法表达式】的最外层，只套分子是无效的\n  ★ 乘法里的 * 1.0 是为了避免整数相除被截断成 0\n  分母为该时间范围内的全部订单，禁止把 status=7 写进 WHERE",
+      "doc": "取消率：已取消订单数占总订单数的比例，也叫取消比例、订单取消占比",
+      "tables": [
+        "dwd_tu_order_all"
+      ],
+      "enabled": true,
+      "metric_type": null,
+      "priority": 1,
+      "sql_template": "",
+      "depends_metrics": [],
+      "conflict_key": ""
+    },
+    {
+      "name": "大板信息费",
+      "keywords": [
+        "大板信息费",
+        "大板平台费",
+        "大板信息费",
+        "信息费"
+      ],
+      "definition": "大板订单的信息费合计，来自费用明细表 information_fee（按 order_no 关联）。",
+      "doc": "SELECT sum(f.information_fee) FROM ods_tu_large_handcart_order_all o JOIN ods_tu_large_handcart_order_fee_detail_all f ON o.order_no=f.order_no。",
+      "tables": [
+        "ods_tu_large_handcart_order_all",
+        "ods_tu_large_handcart_order_fee_detail_all"
+      ],
+      "enabled": true,
+      "metric_type": null,
+      "priority": 1,
+      "sql_template": "",
+      "depends_metrics": [],
+      "conflict_key": ""
+    },
+    {
+      "name": "大板完单率",
+      "keywords": [
+        "大板完单率",
+        "大板完成率",
+        "大板完单",
+        "完单率"
+      ],
+      "definition": "大板完单量 ÷ 大板订单量。",
+      "doc": "round(countIf(o.state=6>0) / count(), 4)；或 = 大板完单量/大板订单量。",
+      "tables": [
+        "ods_tu_large_handcart_order_all"
+      ],
+      "enabled": true,
+      "metric_type": null,
+      "priority": 1,
+      "sql_template": "",
+      "depends_metrics": [],
+      "conflict_key": ""
+    },
+    {
+      "name": "大板完单量",
+      "keywords": [
+        "大板完单量",
+        "大板完成订单量",
+        "大板妥投量",
+        "大板完单",
+        "完单量"
+      ],
+      "definition": "大板运输订单中状态为「完单」的订单笔数（state=6）。",
+      "doc": "SELECT count(distinct o.order_no) FROM ods_tu_large_handcart_order_all o WHERE o.state=6。",
+      "tables": [
+        "ods_tu_large_handcart_order_all"
+      ],
+      "enabled": true,
+      "metric_type": null,
+      "priority": 1,
+      "sql_template": "",
+      "depends_metrics": [],
+      "conflict_key": ""
+    },
+    {
+      "name": "大板完单金额",
+      "keywords": [
+        "大板完单金额",
+        "大板完成订单金额",
+        "大板完单",
+        "完单金额"
+      ],
+      "definition": "大板运输订单中完单（state=6）的订单金额合计。",
+      "doc": "SELECT sum(o.total_amount) FROM ods_tu_large_handcart_order_all o WHERE o.state=6。",
+      "tables": [
+        "ods_tu_large_handcart_order_all"
+      ],
+      "enabled": true,
+      "metric_type": null,
+      "priority": 1,
+      "sql_template": "",
+      "depends_metrics": [],
+      "conflict_key": ""
+    },
+    {
+      "name": "大板订单量",
+      "keywords": [
+        "大板订单量",
+        "大板下单量",
+        "大板订单数",
+        "大板订单",
+        "订单量"
+      ],
+      "definition": "统计大板运输订单的下单总笔数。",
+      "doc": "SELECT count(distinct o.order_no) FROM ods_tu_large_handcart_order_all o （如需排除已删除订单可加 o.deleted=0）。",
+      "tables": [
+        "ods_tu_large_handcart_order_all"
+      ],
+      "enabled": true,
+      "metric_type": null,
+      "priority": 1,
+      "sql_template": "",
+      "depends_metrics": [],
+      "conflict_key": ""
+    },
+    {
+      "name": "大板订单金额",
+      "keywords": [
+        "大板订单金额",
+        "大板成交额",
+        "大板订单总额",
+        "大板订单",
+        "订单金额"
+      ],
+      "definition": "大板运输订单的订单金额合计（按 total_amount 求和）。",
+      "doc": "SELECT sum(o.total_amount) FROM ods_tu_large_handcart_order_all o。",
+      "tables": [
+        "ods_tu_large_handcart_order_all"
+      ],
+      "enabled": true,
+      "metric_type": null,
+      "priority": 1,
+      "sql_template": "",
+      "depends_metrics": [],
+      "conflict_key": ""
+    },
+    {
+      "name": "完单率",
+      "keywords": [
+        "完单率",
+        "完成率"
+      ],
+      "definition": "完单率 = COALESCE(SUM(CASE WHEN status = 6 THEN 1 ELSE 0 END) * 1.0 / COUNT(*), 0)\n  ★ COALESCE 必须套在【整个除法表达式】的最外层\n  分母为该时间范围内的全部订单",
+      "doc": "完单率：已完成订单数占总订单数的比例，也叫完成率、订单完成比例",
+      "tables": [
+        "dwd_tu_order_all"
+      ],
+      "enabled": true,
+      "metric_type": null,
+      "priority": 1,
+      "sql_template": "",
+      "depends_metrics": [],
+      "conflict_key": ""
+    },
+    {
+      "name": "完单量",
+      "keywords": [
+        "完单量",
+        "已完成订单数",
+        "status=6"
+      ],
+      "definition": "订单状态为已完成(status=6)的订单数，即 COUNT(*) WHERE status=6",
+      "doc": "",
+      "tables": [
+        "dwd_tu_order_all"
+      ],
+      "enabled": true,
+      "metric_type": "count",
+      "priority": 1,
+      "sql_template": "",
+      "depends_metrics": [],
+      "conflict_key": ""
+    },
+    {
+      "name": "完单金额",
+      "keywords": [
+        "完单金额",
+        "已完成金额",
+        "status=6",
+        "total"
+      ],
+      "definition": "订单状态为已完成(status=6)的订单金额合计，金额字段为 total，即 SUM(total) WHERE status=6",
+      "doc": "",
+      "tables": [
+        "dwd_tu_order_all"
+      ],
+      "enabled": true,
+      "metric_type": "amount",
+      "priority": 1,
+      "sql_template": "",
+      "depends_metrics": [],
+      "conflict_key": ""
+    },
+    {
+      "name": "客单价",
+      "keywords": [
+        "客单价",
+        "单均价",
+        "客单"
+      ],
+      "definition": "客单价 = COALESCE(SUM(CASE WHEN status = 6 THEN total ELSE 0 END) * 1.0 / SUM(CASE WHEN status = 6 THEN 1 ELSE 0 END), 0)\n  ★ 分子【和】分母都只统计已完成订单（status=6），取消订单不计入\n    错误写法：SUM(total) / ...  ← 这样会把取消单的金额也算进去\n  ★ * 1.0 是为了避免整数相除被截断",
+      "doc": "客单价：平均每个已完成订单的金额，也叫单均价、每单平均金额、平均每单多少钱、客单、平均每单花多少钱、一单平均能收多少、每单收多少钱",
+      "tables": [
+        "dwd_tu_order_all"
+      ],
+      "enabled": true,
+      "metric_type": null,
+      "priority": 1,
+      "sql_template": "",
+      "depends_metrics": [],
+      "conflict_key": ""
+    },
+    {
+      "name": "接单率",
+      "keywords": [
+        "接单率",
+        "接单比例"
+      ],
+      "definition": "接单率 = 接单量 ÷ 订单量 = SUM(CASE WHEN is_picked = 1 THEN 1 ELSE 0 END) * 1.0 / COUNT(*)。分母为总订单量。",
+      "doc": "接单率 = 有司机接单的订单数 / 总订单数。",
+      "tables": [
+        "dwd_tu_order_all"
+      ],
+      "enabled": true,
+      "metric_type": "ratio",
+      "priority": 1,
+      "sql_template": "",
+      "depends_metrics": [],
+      "conflict_key": ""
+    },
+    {
+      "name": "接单量",
+      "keywords": [
+        "接单量",
+        "接单订单",
+        "有司机接单",
+        "已接单"
+      ],
+      "definition": "接单量 = SUM(CASE WHEN is_picked = 1 THEN 1 ELSE 0 END)，即有司机接单（is_picked=1）的订单笔数。",
+      "doc": "接单量 = 有司机接单的订单数（is_picked=1）。",
+      "tables": [
+        "dwd_tu_order_all"
+      ],
+      "enabled": true,
+      "metric_type": "count",
+      "priority": 1,
+      "sql_template": "",
+      "depends_metrics": [],
+      "conflict_key": ""
+    },
+    {
+      "name": "注册司机数",
+      "keywords": [
+        "注册司机数",
+        "注册司机",
+        "新增司机",
+        "新注册司机"
+      ],
+      "definition": "指定时间段内新注册的司机数。口径：COUNT(DISTINCT id) FROM ods_tu_driver_all WHERE toYear(create_data_time) = <年份>（或 create_data_time BETWEEN 起 AND 止）。注册时间固定取司机表 create_data_time 字段。",
+      "doc": "司机注册量，按注册时间口径。",
+      "tables": [
+        "ods_tu_driver_all"
+      ],
+      "enabled": true,
+      "metric_type": null,
+      "priority": 1,
+      "sql_template": "",
+      "depends_metrics": [],
+      "conflict_key": ""
+    },
+    {
+      "name": "注册客户数",
+      "keywords": [
+        "注册客户数",
+        "注册客户",
+        "新增客户",
+        "新注册客户"
+      ],
+      "definition": "指定时间段内新注册的客户数。口径：COUNT(DISTINCT id) FROM ods_tu_customer_all WHERE toYear(create_data_time) = <年份>（或 create_data_time BETWEEN 起 AND 止）。注册时间固定取客户表 create_data_time 字段，不要用 utime/last_login_time。",
+      "doc": "客户注册量，按注册时间口径。",
+      "tables": [
+        "ods_tu_customer_all"
+      ],
+      "enabled": true,
+      "metric_type": null,
+      "priority": 1,
+      "sql_template": "",
+      "depends_metrics": [],
+      "conflict_key": ""
+    },
+    {
+      "name": "线上订单",
+      "keywords": [
+        "线上订单",
+        "线上订单口径",
+        "线上单",
+        "C端订单",
+        "普通订单",
+        "app订单",
+        "用户自主下单",
+        "客户自主下单"
+      ],
+      "definition": "线上订单 = 客户自主在线上（C端/App）发起、非调度/业务员代发的订单。判定口径（必须同时满足）：is_salesman = 0 AND is_service_staff IN (0,4,5)。说明：is_salesman=0 表示非业务员发单；is_service_staff ∈ {0(不是),4(平台客服),5(代理商)} 表示非各线路调度代发（1小板调度/2代驾调度/3大板调度/6汽车销售 均不算线上订单）。统计线上订单相关指标时，WHERE 条件必须同时带上这两个判定。",
+      "doc": "与「调度单」互斥。is_service_staff=6(汽车销售) 不计入线上订单，也不计入调度单。is_salesman=1 的订单一律不属于线上订单。",
+      "tables": [
+        "dwd_tu_order_all"
+      ],
+      "enabled": true,
+      "metric_type": null,
+      "priority": 1,
+      "sql_template": "",
+      "depends_metrics": [],
+      "conflict_key": ""
+    },
+    {
+      "name": "订单量",
+      "keywords": [
+        "订单量",
+        "订单数",
+        "单量"
+      ],
+      "definition": "订单量 = COUNT(*)",
+      "doc": "订单量：订单的总数量，也叫订单数、单量、下单笔数",
+      "tables": [
+        "dwd_tu_order_all"
+      ],
+      "enabled": true,
+      "metric_type": null,
+      "priority": 1,
+      "sql_template": "",
+      "depends_metrics": [],
+      "conflict_key": ""
+    },
+    {
+      "name": "询价后发单率",
+      "keywords": [
+        "询价后发单率",
+        "询价发单率",
+        "首询后发单"
+      ],
+      "definition": "询价后发单率 = 注册用户中「注册当月首次询价之后产生订单」的客户数 / 注册客户总数。\n★ 必须按「防笛卡尔放大范式」（sql_rules 规则15）写，绝不直接 JOIN 询价明细 × 订单明细。\n★ SELECT 输出列【一律用中文反引号别名】（见规则18），示例：`统计日期` / `新注册用户数` / `询价后发单人数` / `询价后发单率`。\n  WITH new_users AS (\n      SELECT id AS customer, toDate(toDateTime(ctime)) AS reg_date,\n             toStartOfMonth(toDateTime(ctime)) AS reg_month\n      FROM ods_tu_customer_all\n      WHERE toDate(toDateTime(ctime)) >= '起始' AND toDate(toDateTime(ctime)) < '结束'\n  ),\n  first_pricing AS (\n      SELECT p.customer, min(p.pricing_time) AS first_pricing_time\n      FROM ods_tu_order_pricing_record_all AS p\n      INNER JOIN new_users AS u ON u.customer = p.customer\n      WHERE toStartOfMonth(p.pricing_time) = u.reg_month\n      GROUP BY p.customer\n  ),\n  order_after AS (\n      SELECT o.customer,\n             max(toDateTime(o.ctime) >= fp.first_pricing_time) AS ordered_after\n      FROM dwd_tu_order_all AS o\n      INNER JOIN first_pricing AS fp ON fp.customer = o.customer\n      GROUP BY o.customer\n  )\n  SELECT u.reg_date AS `统计日期`,\n         COUNT(*) AS `新注册用户数`,\n         COALESCE(SUM(oa.ordered_after), 0) AS `询价后发单人数`,\n         round(COALESCE(SUM(oa.ordered_after) * 1.0 / COUNT(*), 0), 4) AS `询价后发单率`\n  FROM new_users AS u\n  LEFT JOIN order_after AS oa ON oa.customer = u.customer\n  GROUP BY u.reg_date ORDER BY u.reg_date\n★ 比率字段 pricing_after_rate 一律 round(...,4) 保留 4 位小数（sql_rules 规则17）。\n★ 字段类型：订单/客户 ctime 是 Int32 时间戳须 toDateTime；询价 pricing_time 是 DateTime 直接用。\n★ 「当月」= 行为自然月 toStartOfMonth(...)，绝不用注册日对齐询价日（会全 0）。\n★ 明细表之间禁止直接 JOIN，必须先各自 GROUP BY customer 预聚合再 1:1 关联。",
+      "doc": "询价后发单率：注册客户中，在注册当月首次询价之后产生订单的客户占比；三表（客户/订单/询价）关联，按注册日统计",
+      "tables": [
+        "ods_tu_customer_all",
+        "dwd_tu_order_all",
+        "ods_tu_order_pricing_record_all"
+      ],
+      "enabled": true,
+      "metric_type": null,
+      "priority": 1,
+      "sql_template": "",
+      "depends_metrics": [],
+      "conflict_key": ""
+    },
+    {
+      "name": "调度单",
+      "keywords": [
+        "调度单",
+        "调度订单",
+        "业务员单",
+        "代发单",
+        "调度代发",
+        "业务员代发"
+      ],
+      "definition": "调度单 = 由业务员/各线路调度代客户发起的订单。判定口径（必须同时满足）：is_salesman = 1 AND is_service_staff IN (1,2,3)。说明：is_salesman=1 表示是业务员发单；is_service_staff ∈ {1(小板调度),2(代驾调度),3(大板调度)} 表示由调度代发。统计调度单相关指标时，WHERE 条件必须同时带上这两个判定。",
+      "doc": "与「线上订单」互斥。注意 is_service_staff=4(平台客服)/5(代理商)/6(汽车销售) 即使 is_salesman=0 也不满足此口径；is_salesman=0 的订单一律不属于调度单。",
+      "tables": [
+        "dwd_tu_order_all"
+      ],
+      "enabled": true,
+      "metric_type": null,
+      "priority": 1,
+      "sql_template": "",
+      "depends_metrics": [],
+      "conflict_key": ""
+    }
+  ],
+  "entities": [
+    {
+      "name": "代驾订单",
+      "table_name": "ods_valet_order_all",
+      "grain": "一行=一个代驾订单(order_no)",
+      "comment": "代驾业务订单主表，status=40 为已完成（完单），order_amount 为订单金额",
+      "keywords": [
+        "代驾",
+        "代驾订单",
+        "代驾单"
+      ],
+      "enabled": true
+    },
+    {
+      "name": "代驾订单表",
+      "table_name": "ods_valet_order_all",
+      "grain": "订单",
+      "comment": "代驾订单主表。发单客户字段=customer_id(Int64)；发单时间字段=order_time(DateTime，发单时间)。统计「代驾发单」按 toYear(order_time)=年份 过滤。",
+      "keywords": [
+        "代驾订单",
+        "代驾订单表",
+        "代驾",
+        "valet",
+        "代驾订单"
+      ],
+      "enabled": true
+    },
+    {
+      "name": "代驾费用",
+      "table_name": "ods_valet_fee_detail_all",
+      "grain": "一行=一条代驾费用明细(order_no 可多条)",
+      "comment": "代驾费用明细表，service_fee 为信息费/平台服务费，经 order_no 关联代驾订单",
+      "keywords": [
+        "代驾费用",
+        "代驾服务费"
+      ],
+      "enabled": true
+    },
+    {
+      "name": "司机信息表",
+      "table_name": "ods_tu_driver_all",
+      "grain": "司机",
+      "comment": "司机主表（注册司机数来源）。司机id字段=id(Int64)；注册时间字段=create_data_time(DateTime)。统计「注册司机数」按 toYear(create_data_time)=年份 过滤。",
+      "keywords": [
+        "司机信息表",
+        "司机表",
+        "注册司机",
+        "司机",
+        "driver"
+      ],
+      "enabled": true
+    },
+    {
+      "name": "大板订单",
+      "table_name": "ods_tu_large_handcart_order_all",
+      "grain": "一行=一个大板运输订单(order_no)",
+      "comment": "大板运输订单主表，state=6 为完单，total_amount 为订单金额",
+      "keywords": [
+        "大板",
+        "大板订单",
+        "大板单",
+        "大板运输"
+      ],
+      "enabled": true
+    },
+    {
+      "name": "大板订单表",
+      "table_name": "ods_tu_large_handcart_order_all",
+      "grain": "订单",
+      "comment": "大板（大板车）订单主表。发单客户字段=customer_id(Int64)；发单时间字段=order_time(DateTime，订单时间/发单时间)。统计「大板发单」按 toYear(order_time)=年份 过滤。",
+      "keywords": [
+        "大板订单",
+        "大板订单表",
+        "大板",
+        "large_handcart",
+        "大板车订单"
+      ],
+      "enabled": true
+    },
+    {
+      "name": "大板费用",
+      "table_name": "ods_tu_large_handcart_order_fee_detail_all",
+      "grain": "一行=一条大板费用明细(order_no 可多条)",
+      "comment": "大板费用明细表，information_fee 为信息费，经 order_no 关联大板订单",
+      "keywords": [
+        "大板费用",
+        "大板信息费"
+      ],
+      "enabled": true
+    },
+    {
+      "name": "客户信息表",
+      "table_name": "ods_tu_customer_all",
+      "grain": "客户",
+      "comment": "客户主表（注册客户数来源）。客户id字段=id(Int64)；注册时间字段=create_data_time(DateTime)。统计「注册客户数」按 toYear(create_data_time)=年份 过滤。",
+      "keywords": [
+        "客户信息表",
+        "客户表",
+        "注册客户",
+        "客户",
+        "customer"
+      ],
+      "enabled": true
+    },
+    {
+      "name": "小板订单表",
+      "table_name": "dwd_tu_order_all",
+      "grain": "订单",
+      "comment": "小板快运订单。注意：小板订单不是独立表，而是统一订单表 dwd_tu_order_all 中 order_type=1 的子集（1=小板快运，2=拖车救援，请勿误用2）。发单客户字段=customer(Int64)；发单时间字段=ctime(Int32 秒级unix时间戳，用 toDateTime(ctime) 转换) 或 ex_create_time(DateTime)。统计「小板发单」必须加条件 order_type=1 且 toYear(toDateTime(ctime))=年份。",
+      "keywords": [
+        "小板订单",
+        "小板订单表",
+        "小板",
+        "小板快运",
+        "small_order",
+        "小板车订单"
+      ],
+      "enabled": true
+    }
+  ],
+  "relationships": [
+    {
+      "id": 1,
+      "from_entity": "代驾订单",
+      "to_entity": "代驾费用",
+      "join_sql": "ods_valet_order_all o JOIN ods_valet_fee_detail_all f ON o.order_no = f.order_no",
+      "join_type": "LEFT",
+      "cardinality": "1:N",
+      "pre_agg_required": true,
+      "rule_note": "费用明细一对多：必须按 order_no 预聚合(sum(service_fee) group by order_no) 后再 1:1 JOIN，否则会笛卡尔放大污染订单量/金额/完单率等所有指标",
+      "enabled": true
+    },
+    {
+      "id": 2,
+      "from_entity": "大板订单",
+      "to_entity": "大板费用",
+      "join_sql": "ods_tu_large_handcart_order_all o JOIN ods_tu_large_handcart_order_fee_detail_all f ON o.order_no = f.order_no",
+      "join_type": "LEFT",
+      "cardinality": "1:N",
+      "pre_agg_required": true,
+      "rule_note": "费用明细一对多：必须按 order_no 预聚合(sum(information_fee) group by order_no) 后再 1:1 JOIN，否则会笛卡尔放大",
+      "enabled": true
+    }
+  ],
+  "dicts": [
+    {
+      "name": "APP应用市场",
+      "dict_type": "",
+      "field_hint": "app_market_source",
+      "keywords": [
+        "APP",
+        "app",
+        "应用市场"
+      ],
+      "items": [
+        {
+          "value": "1",
+          "label": "华为应用市场"
+        },
+        {
+          "value": "2",
+          "label": "小米应用市场"
+        },
+        {
+          "value": "3",
+          "label": "VIVO应用市场"
+        },
+        {
+          "value": "4",
+          "label": "OPPO应用市场"
+        },
+        {
+          "value": "5",
+          "label": "应用宝应用市场"
+        },
+        {
+          "value": "6",
+          "label": "百度应用市场"
+        },
+        {
+          "value": "7",
+          "label": "360应用市场"
+        },
+        {
+          "value": "8",
+          "label": "苹果应用市场"
+        },
+        {
+          "value": "9",
+          "label": "车拖车自有"
+        },
+        {
+          "value": "10",
+          "label": "快手应用市场"
+        },
+        {
+          "value": "11",
+          "label": "三方推广"
+        },
+        {
+          "value": "12",
+          "label": "荣耀应用市场"
+        },
+        {
+          "value": "13",
+          "label": "抖音应用市场"
+        },
+        {
+          "value": "14",
+          "label": "海报推广"
+        },
+        {
+          "value": "15",
+          "label": "华为鸿蒙应用市场"
+        },
+        {
+          "value": "16",
+          "label": "小红书"
+        }
+      ],
+      "enabled": true
+    },
+    {
+      "name": "保司订单",
+      "dict_type": "",
+      "field_hint": "need_insurance",
+      "keywords": [
+        "保司订单",
+        "保司",
+        "保险",
+        "投保",
+        "need_insurance"
+      ],
+      "items": [
+        {
+          "value": "0",
+          "label": "否"
+        },
+        {
+          "value": "1",
+          "label": "是"
+        }
+      ],
+      "enabled": true
+    },
+    {
+      "name": "客服/调度身份",
+      "dict_type": "",
+      "field_hint": "is_service_staff",
+      "keywords": [
+        "客户身份",
+        "订单发单客户身份",
+        "发单人身份",
+        "客服",
+        "调度",
+        "小板调度",
+        "代驾调度",
+        "大板调度",
+        "平台客服",
+        "代理商",
+        "汽车销售"
+      ],
+      "items": [
+        {
+          "value": "0",
+          "label": "不是"
+        },
+        {
+          "value": "1",
+          "label": "小板调度"
+        },
+        {
+          "value": "2",
+          "label": "代驾调度"
+        },
+        {
+          "value": "3",
+          "label": "大板调度"
+        },
+        {
+          "value": "4",
+          "label": "平台客服"
+        },
+        {
+          "value": "5",
+          "label": "代理商"
+        },
+        {
+          "value": "6",
+          "label": "汽车销售"
+        }
+      ],
+      "enabled": true
+    },
+    {
+      "name": "应用主体",
+      "dict_type": "",
+      "field_hint": "app_entity_source",
+      "keywords": [
+        "渠道",
+        "来源",
+        "source"
+      ],
+      "items": [
+        {
+          "value": "213",
+          "label": "车拖车大板物流端"
+        },
+        {
+          "value": "701",
+          "label": "三方通用渠道"
+        },
+        {
+          "value": "702",
+          "label": "联盟拍"
+        },
+        {
+          "value": "703",
+          "label": "支付宝-我的快递"
+        },
+        {
+          "value": "101",
+          "label": "车拖车"
+        },
+        {
+          "value": "102",
+          "label": "车拖车司机端"
+        },
+        {
+          "value": "103",
+          "label": "惠拖车"
+        },
+        {
+          "value": "104",
+          "label": "来运车"
+        },
+        {
+          "value": "105",
+          "label": "车拖车代理商"
+        },
+        {
+          "value": "201",
+          "label": "慧拉车"
+        },
+        {
+          "value": "202",
+          "label": "大板拖车"
+        },
+        {
+          "value": "203",
+          "label": "大板运车"
+        },
+        {
+          "value": "204",
+          "label": "慧拖车APP"
+        },
+        {
+          "value": "205",
+          "label": "慧运车APP"
+        },
+        {
+          "value": "206",
+          "label": "慧拉车APP"
+        },
+        {
+          "value": "207",
+          "label": "车行记APP"
+        },
+        {
+          "value": "208",
+          "label": "51板车APP"
+        },
+        {
+          "value": "209",
+          "label": "拖车物流APP"
+        },
+        {
+          "value": "210",
+          "label": "轿车托运"
+        },
+        {
+          "value": "211",
+          "label": "汽车托运"
+        },
+        {
+          "value": "212",
+          "label": "飞鱼留资页面"
+        },
+        {
+          "value": "214",
+          "label": "慧拖车-鸿蒙"
+        },
+        {
+          "value": "301",
+          "label": "消息提醒器APP"
+        },
+        {
+          "value": "401",
+          "label": "伴驾"
+        },
+        {
+          "value": "402",
+          "label": "代驾司机端"
+        },
+        {
+          "value": "502",
+          "label": "车车达员工端APP"
+        },
+        {
+          "value": "503",
+          "label": "救援PC"
+        },
+        {
+          "value": "504",
+          "label": "车车达小程序"
+        }
+      ],
+      "enabled": true
+    },
+    {
+      "name": "是否业务员",
+      "dict_type": "",
+      "field_hint": "is_salesman",
+      "keywords": [
+        "业务员",
+        "客户身份",
+        "发单人身份",
+        "是否业务员",
+        "订单发单客户身份"
+      ],
+      "items": [
+        {
+          "value": "0",
+          "label": "不是业务员"
+        },
+        {
+          "value": "1",
+          "label": "是业务员"
+        }
+      ],
+      "enabled": true
+    },
+    {
+      "name": "来源渠道",
+      "dict_type": "",
+      "field_hint": "channel_source",
+      "keywords": [
+        "渠道",
+        "来源渠道",
+        "channel_source"
+      ],
+      "items": [
+        {
+          "value": "1",
+          "label": "APP"
+        },
+        {
+          "value": "101",
+          "label": "安卓"
+        },
+        {
+          "value": "102",
+          "label": "IOS"
+        },
+        {
+          "value": "103",
+          "label": "鸿蒙"
+        },
+        {
+          "value": "2",
+          "label": "小程序"
+        },
+        {
+          "value": "201",
+          "label": "微信"
+        },
+        {
+          "value": "202",
+          "label": "抖音"
+        },
+        {
+          "value": "203",
+          "label": "快手"
+        },
+        {
+          "value": "204",
+          "label": "支付宝"
+        },
+        {
+          "value": "3",
+          "label": "H5页面"
+        },
+        {
+          "value": "301",
+          "label": "官网页面"
+        },
+        {
+          "value": "302",
+          "label": "老邀请注册页面"
+        },
+        {
+          "value": "303",
+          "label": "新邀请注册页面"
+        },
+        {
+          "value": "4",
+          "label": "后台管理台录入"
+        },
+        {
+          "value": "401",
+          "label": "后台管理台录入"
+        },
+        {
+          "value": "402",
+          "label": "高德地图-后台录入"
+        },
+        {
+          "value": "403",
+          "label": "拼多多-后台录入"
+        },
+        {
+          "value": "404",
+          "label": "市场部-后台录入"
+        },
+        {
+          "value": "405",
+          "label": "新媒体-后台录入"
+        },
+        {
+          "value": "406",
+          "label": "老客户-后台录入"
+        },
+        {
+          "value": "407",
+          "label": "小红书-后台录入"
+        },
+        {
+          "value": "408",
+          "label": "运满满"
+        },
+        {
+          "value": "409",
+          "label": "博车网-后台录入"
+        },
+        {
+          "value": "412",
+          "label": "询价线索-后台录入"
+        },
+        {
+          "value": "413",
+          "label": "新媒体转化-抖音"
+        },
+        {
+          "value": "414",
+          "label": "新媒体转化-小红书"
+        },
+        {
+          "value": "418",
+          "label": "爱车的诺诺-批量导入"
+        },
+        {
+          "value": "5",
+          "label": "服务台录入"
+        },
+        {
+          "value": "501",
+          "label": "服务台录入"
+        },
+        {
+          "value": "6",
+          "label": "PC"
+        },
+        {
+          "value": "601",
+          "label": "救援PC端"
+        },
+        {
+          "value": "7",
+          "label": "三方对外渠道"
+        },
+        {
+          "value": "701",
+          "label": "通用三方渠道下单"
+        },
+        {
+          "value": "702",
+          "label": "联盟拍渠道下单"
+        },
+        {
+          "value": "703",
+          "label": "支付宝-我的快递"
+        }
+      ],
+      "enabled": true
+    },
+    {
+      "name": "订单状态",
+      "dict_type": "",
+      "field_hint": "status",
+      "keywords": [
+        "订单状态",
+        "status",
+        "已完成"
+      ],
+      "items": [
+        {
+          "value": "6",
+          "label": "已完成"
+        }
+      ],
+      "enabled": true
+    }
+  ],
+  "table_acl": [
+    [
+      "ads_label_statistics_prd_all",
+      0,
+      "标签统计-演示"
+    ],
+    [
+      "dim_user_contact",
+      0,
+      "含手机号与身份证号，个人敏感信息，禁止 AI 访问"
+    ],
+    [
+      "ods_tu_large_handcart_order_fee_detail_all",
+      0,
+      ""
+    ],
+    [
+      "dwd_tu_order_all",
+      1,
+      ""
+    ],
+    [
+      "ods_tu_customer_all",
+      1,
+      ""
+    ],
+    [
+      "ods_tu_driver_all",
+      1,
+      ""
+    ],
+    [
+      "ods_tu_large_handcart_order_all",
+      1,
+      ""
+    ],
+    [
+      "ods_tu_large_handcart_order_statistics_all",
+      1,
+      ""
+    ],
+    [
+      "ods_tu_order_extend_all",
+      1,
+      ""
+    ],
+    [
+      "ods_tu_order_pricing_record_all",
+      1,
+      ""
+    ],
+    [
+      "ods_user_register_detail_all",
+      1,
+      ""
+    ],
+    [
+      "ods_valet_fee_detail_all",
+      1,
+      ""
+    ],
+    [
+      "ods_valet_order_all",
+      1,
+      ""
+    ]
+  ],
+  "column_comments_count": 94,
+  "kb_docs": []
+}

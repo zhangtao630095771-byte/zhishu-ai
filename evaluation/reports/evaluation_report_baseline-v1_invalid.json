@@ -1,0 +1,2435 @@
+{
+  "experiment_id": "EXP-20261008-093231",
+  "tag": "baseline-v1",
+  "generated_at": "2026-10-08 09:33:35",
+  "dataset": "evaluation/datasets/golden",
+  "metrics": {
+    "overall_accuracy": 0.2059,
+    "intent_accuracy": 0.0714,
+    "metric_accuracy": 0.0952,
+    "time_accuracy": null,
+    "sql_accuracy": 0.0769,
+    "table_retrieval_recall": 0.0909,
+    "field_retrieval_recall": null,
+    "sql_execution_success_rate": 0.2353,
+    "result_accuracy": null,
+    "grounding_accuracy": 1.0,
+    "hallucination_rate": 0.0,
+    "abstention_accuracy": 1.0,
+    "p50_latency": 1.65,
+    "p95_latency": 2.67,
+    "avg_latency": 1.82,
+    "average_token": null,
+    "average_cost": null,
+    "consistency_rate": null,
+    "sample_count": 34,
+    "executed_count": 2
+  },
+  "results": [
+    {
+      "id": "g001",
+      "name": "简单查询-订单量",
+      "category": "simple",
+      "difficulty": "easy",
+      "question": "查询订单量",
+      "ok": false,
+      "error": "exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (request_id: c0d4b0a9-ad85-43ac-bba0-0e6f21b89401)', 'type': 'unknown_error', 'param': None, 'code': 'invalid_request_error'}}",
+      "sql": "",
+      "tables": [],
+      "metrics": [],
+      "understanding": {},
+      "answer": null,
+      "validation": null,
+      "rows_preview": [],
+      "latency": 2.67,
+      "trace": null,
+      "scores": {
+        "ok": {
+          "status": false,
+          "detail": "ok=False 期望=True error=exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (reques"
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": false,
+          "detail": "缺表=['dwd_tu_order_all'] 实际=[]"
+        },
+        "metrics": {
+          "status": false,
+          "detail": "缺指标=['订单量'] 实际=[]"
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": ""
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        },
+        "intent": {
+          "status": false,
+          "detail": "got=None 期望=summary"
+        }
+      }
+    },
+    {
+      "id": "g002",
+      "name": "简单查询-完单量",
+      "category": "simple",
+      "difficulty": "easy",
+      "question": "统计完单量",
+      "ok": false,
+      "error": "exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (request_id: 9e2b6fa3-0645-479c-a161-9875e7de5959)', 'type': 'unknown_error', 'param': None, 'code': 'invalid_request_error'}}",
+      "sql": "",
+      "tables": [],
+      "metrics": [],
+      "understanding": {},
+      "answer": null,
+      "validation": null,
+      "rows_preview": [],
+      "latency": 1.63,
+      "trace": null,
+      "scores": {
+        "ok": {
+          "status": false,
+          "detail": "ok=False 期望=True error=exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (reques"
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": false,
+          "detail": "缺表=['dwd_tu_order_all'] 实际=[]"
+        },
+        "metrics": {
+          "status": false,
+          "detail": "缺指标=['完单量'] 实际=[]"
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": false,
+          "detail": "SQL缺谓词=['status = 6']"
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": ""
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        },
+        "intent": {
+          "status": false,
+          "detail": "got=None 期望=summary"
+        }
+      }
+    },
+    {
+      "id": "g003",
+      "name": "普通查询-月指标组合",
+      "category": "normal",
+      "difficulty": "easy",
+      "question": "查询2026年9月的订单量、完单量、完单率",
+      "ok": false,
+      "error": "exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (request_id: f247afe0-27f8-47f7-b942-95d8d0b1db20)', 'type': 'unknown_error', 'param': None, 'code': 'invalid_request_error'}}",
+      "sql": "",
+      "tables": [],
+      "metrics": [],
+      "understanding": {},
+      "answer": null,
+      "validation": null,
+      "rows_preview": [],
+      "latency": 1.86,
+      "trace": null,
+      "scores": {
+        "ok": {
+          "status": false,
+          "detail": "ok=False 期望=True error=exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (reques"
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": false,
+          "detail": "缺表=['dwd_tu_order_all'] 实际=[]"
+        },
+        "metrics": {
+          "status": false,
+          "detail": "缺指标=['订单量', '完单量', '完单率'] 实际=[]"
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": false,
+          "detail": "SQL缺谓词=['2026-09-01', '2026-10-01']"
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        },
+        "intent": {
+          "status": false,
+          "detail": "got=None 期望=summary"
+        }
+      }
+    },
+    {
+      "id": "g004",
+      "name": "多条件-线上订单已完成",
+      "category": "multi_condition",
+      "difficulty": "medium",
+      "question": "统计线上订单中已完成状态的订单量",
+      "ok": false,
+      "error": "exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (request_id: d559d987-ff9a-4f9c-925f-bda8b0d27228)', 'type': 'unknown_error', 'param': None, 'code': 'invalid_request_error'}}",
+      "sql": "",
+      "tables": [],
+      "metrics": [],
+      "understanding": {},
+      "answer": null,
+      "validation": null,
+      "rows_preview": [],
+      "latency": 1.8,
+      "trace": null,
+      "scores": {
+        "ok": {
+          "status": false,
+          "detail": "ok=False 期望=True error=exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (reques"
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": false,
+          "detail": "缺表=['dwd_tu_order_all'] 实际=[]"
+        },
+        "metrics": {
+          "status": false,
+          "detail": "缺指标=['线上订单'] 实际=[]"
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": false,
+          "detail": "SQL缺谓词=['is_salesman = 0']"
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": ""
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        },
+        "intent": {
+          "status": false,
+          "detail": "got=None 期望=summary"
+        }
+      }
+    },
+    {
+      "id": "g005",
+      "name": "多条件-调度单完单",
+      "category": "multi_condition",
+      "difficulty": "medium",
+      "question": "查询调度单的完单量和完单率",
+      "ok": false,
+      "error": "exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (request_id: c78b5fa5-8de1-4946-9ceb-a62c37043a56)', 'type': 'unknown_error', 'param': None, 'code': 'invalid_request_error'}}",
+      "sql": "",
+      "tables": [],
+      "metrics": [],
+      "understanding": {},
+      "answer": null,
+      "validation": null,
+      "rows_preview": [],
+      "latency": 1.58,
+      "trace": null,
+      "scores": {
+        "ok": {
+          "status": false,
+          "detail": "ok=False 期望=True error=exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (reques"
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": null,
+          "detail": ""
+        },
+        "metrics": {
+          "status": false,
+          "detail": "缺指标=['调度单'] 实际=[]"
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": false,
+          "detail": "SQL缺谓词=['is_salesman = 1']"
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": ""
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        },
+        "intent": {
+          "status": false,
+          "detail": "got=None 期望=summary"
+        }
+      }
+    },
+    {
+      "id": "g006",
+      "name": "多表Join-注册与发单客户",
+      "category": "join",
+      "difficulty": "hard",
+      "question": "查询2025年全年的注册客户数，注册司机数，发单客户数",
+      "ok": false,
+      "error": "exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (request_id: 242ad701-846c-46e1-9676-34f5965618c3)', 'type': 'unknown_error', 'param': None, 'code': 'invalid_request_error'}}",
+      "sql": "",
+      "tables": [],
+      "metrics": [],
+      "understanding": {},
+      "answer": null,
+      "validation": null,
+      "rows_preview": [],
+      "latency": 1.68,
+      "trace": null,
+      "scores": {
+        "ok": {
+          "status": false,
+          "detail": "ok=False 期望=True error=exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (reques"
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": false,
+          "detail": "缺表=['ods_tu_customer_all', 'ods_tu_driver_all'] 实际=[]"
+        },
+        "metrics": {
+          "status": false,
+          "detail": "缺指标=['注册客户数', '注册司机数', '发单客户数'] 实际=[]"
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        },
+        "intent": {
+          "status": false,
+          "detail": "got=None 期望=summary"
+        }
+      }
+    },
+    {
+      "id": "g007",
+      "name": "聚合查询-按月",
+      "category": "aggregate",
+      "difficulty": "medium",
+      "question": "按月统计2026年的订单量",
+      "ok": false,
+      "error": "exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (request_id: 643b5f7f-28aa-47ce-8cea-dd2e0ab13466)', 'type': 'unknown_error', 'param': None, 'code': 'invalid_request_error'}}",
+      "sql": "",
+      "tables": [],
+      "metrics": [],
+      "understanding": {},
+      "answer": null,
+      "validation": null,
+      "rows_preview": [],
+      "latency": 1.64,
+      "trace": null,
+      "scores": {
+        "ok": {
+          "status": false,
+          "detail": "ok=False 期望=True error=exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (reques"
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": false,
+          "detail": "缺表=['dwd_tu_order_all'] 实际=[]"
+        },
+        "metrics": {
+          "status": false,
+          "detail": "缺指标=['订单量'] 实际=[]"
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": false,
+          "detail": "SQL缺谓词=['group by']"
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        },
+        "intent": {
+          "status": false,
+          "detail": "got=None 期望=trend"
+        }
+      }
+    },
+    {
+      "id": "g008",
+      "name": "时间查询-起止",
+      "category": "time",
+      "difficulty": "medium",
+      "question": "查询2026年6月1日至今的小板订单量",
+      "ok": false,
+      "error": "exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (request_id: 064750b4-8ed2-404c-b40d-6dae61e0d66c)', 'type': 'unknown_error', 'param': None, 'code': 'invalid_request_error'}}",
+      "sql": "",
+      "tables": [],
+      "metrics": [],
+      "understanding": {},
+      "answer": null,
+      "validation": null,
+      "rows_preview": [],
+      "latency": 1.66,
+      "trace": null,
+      "scores": {
+        "ok": {
+          "status": false,
+          "detail": "ok=False 期望=True error=exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (reques"
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": false,
+          "detail": "缺表=['dwd_tu_order_all'] 实际=[]"
+        },
+        "metrics": {
+          "status": null,
+          "detail": ""
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": false,
+          "detail": "SQL缺谓词=['order_type = 1', '2026-06-01']"
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": ""
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        },
+        "intent": {
+          "status": false,
+          "detail": "got=None 期望=summary"
+        }
+      }
+    },
+    {
+      "id": "g009",
+      "name": "同比-节前对比",
+      "category": "yoy",
+      "difficulty": "hard",
+      "question": "查询25号前7天同比去年中秋节前7天发单完单率",
+      "ok": false,
+      "error": "exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (request_id: 78f163c5-7fc5-4107-9051-1fc94b2f56f5)', 'type': 'unknown_error', 'param': None, 'code': 'invalid_request_error'}}",
+      "sql": "",
+      "tables": [],
+      "metrics": [],
+      "understanding": {},
+      "answer": null,
+      "validation": null,
+      "rows_preview": [],
+      "latency": 1.79,
+      "trace": null,
+      "scores": {
+        "ok": {
+          "status": false,
+          "detail": "ok=False 期望=True error=exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (reques"
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": null,
+          "detail": ""
+        },
+        "metrics": {
+          "status": false,
+          "detail": "缺指标=['完单率'] 实际=[]"
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": "time_sensitive 跳过"
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        },
+        "intent": {
+          "status": false,
+          "detail": "got=None 期望=compare"
+        }
+      }
+    },
+    {
+      "id": "g028",
+      "name": "环比-本月对上月",
+      "category": "mom",
+      "difficulty": "hard",
+      "question": "查询本月订单量环比上月",
+      "ok": false,
+      "error": "exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (request_id: 09e1293f-fe29-493e-89e6-ef2e8d9c2115)', 'type': 'unknown_error', 'param': None, 'code': 'invalid_request_error'}}",
+      "sql": "",
+      "tables": [],
+      "metrics": [],
+      "understanding": {},
+      "answer": null,
+      "validation": null,
+      "rows_preview": [],
+      "latency": 1.6,
+      "trace": null,
+      "scores": {
+        "ok": {
+          "status": false,
+          "detail": "ok=False 期望=True error=exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (reques"
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": false,
+          "detail": "缺表=['dwd_tu_order_all'] 实际=[]"
+        },
+        "metrics": {
+          "status": null,
+          "detail": ""
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": ""
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        },
+        "intent": {
+          "status": false,
+          "detail": "got=None 期望=compare"
+        }
+      }
+    },
+    {
+      "id": "g010",
+      "name": "半年度",
+      "category": "half_year",
+      "difficulty": "medium",
+      "question": "查询2026年上半年的订单量",
+      "ok": false,
+      "error": "exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (request_id: 8328912e-ca23-4be7-9fd6-2f7042533d46)', 'type': 'unknown_error', 'param': None, 'code': 'invalid_request_error'}}",
+      "sql": "",
+      "tables": [],
+      "metrics": [],
+      "understanding": {},
+      "answer": null,
+      "validation": null,
+      "rows_preview": [],
+      "latency": 1.65,
+      "trace": null,
+      "scores": {
+        "ok": {
+          "status": false,
+          "detail": "ok=False 期望=True error=exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (reques"
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": false,
+          "detail": "缺表=['dwd_tu_order_all'] 实际=[]"
+        },
+        "metrics": {
+          "status": null,
+          "detail": ""
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": false,
+          "detail": "SQL缺谓词=['2026-01-01', '2026-07-01']"
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        },
+        "intent": {
+          "status": false,
+          "detail": "got=None 期望=summary"
+        }
+      }
+    },
+    {
+      "id": "g029",
+      "name": "季度",
+      "category": "quarter",
+      "difficulty": "medium",
+      "question": "查询2026年第一季度的大板完单量",
+      "ok": false,
+      "error": "exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (request_id: 9e78baa8-8ef3-473b-869a-dc9d76b35dfe)', 'type': 'unknown_error', 'param': None, 'code': 'invalid_request_error'}}",
+      "sql": "",
+      "tables": [],
+      "metrics": [],
+      "understanding": {},
+      "answer": null,
+      "validation": null,
+      "rows_preview": [],
+      "latency": 1.64,
+      "trace": null,
+      "scores": {
+        "ok": {
+          "status": false,
+          "detail": "ok=False 期望=True error=exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (reques"
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": false,
+          "detail": "缺表=['ods_tu_large_handcart_order_all'] 实际=[]"
+        },
+        "metrics": {
+          "status": false,
+          "detail": "缺指标=['大板完单量'] 实际=[]"
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        },
+        "intent": {
+          "status": false,
+          "detail": "got=None 期望=summary"
+        }
+      }
+    },
+    {
+      "id": "g011",
+      "name": "模糊表达-情况",
+      "category": "vague",
+      "difficulty": "hard",
+      "question": "最近大板情况怎么样",
+      "ok": false,
+      "error": "exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (request_id: 8b089e3b-3b20-4f85-931f-184b1d6cb483)', 'type': 'unknown_error', 'param': None, 'code': 'invalid_request_error'}}",
+      "sql": "",
+      "tables": [],
+      "metrics": [],
+      "understanding": {},
+      "answer": null,
+      "validation": null,
+      "rows_preview": [],
+      "latency": 1.61,
+      "trace": null,
+      "scores": {
+        "ok": {
+          "status": false,
+          "detail": "ok=False 期望=True error=exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (reques"
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": false,
+          "detail": "缺表=['ods_tu_large_handcart_order_all'] 实际=[]"
+        },
+        "metrics": {
+          "status": null,
+          "detail": ""
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": ""
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        },
+        "intent": {
+          "status": false,
+          "detail": "got=None 期望=summary"
+        }
+      }
+    },
+    {
+      "id": "g012",
+      "name": "口语表达-完成了多少单",
+      "category": "colloquial",
+      "difficulty": "medium",
+      "question": "大板9月份完成了多少单",
+      "ok": false,
+      "error": "exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (request_id: fa3d3142-1490-4db3-81ee-2a8e3dbdd1b8)', 'type': 'unknown_error', 'param': None, 'code': 'invalid_request_error'}}",
+      "sql": "",
+      "tables": [],
+      "metrics": [],
+      "understanding": {},
+      "answer": null,
+      "validation": null,
+      "rows_preview": [],
+      "latency": 1.62,
+      "trace": null,
+      "scores": {
+        "ok": {
+          "status": false,
+          "detail": "ok=False 期望=True error=exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (reques"
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": false,
+          "detail": "缺表=['ods_tu_large_handcart_order_all'] 实际=[]"
+        },
+        "metrics": {
+          "status": false,
+          "detail": "缺指标=['大板完单量'] 实际=[]"
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        },
+        "intent": {
+          "status": false,
+          "detail": "got=None 期望=summary"
+        }
+      }
+    },
+    {
+      "id": "g013",
+      "name": "同义词-妥投量",
+      "category": "synonym",
+      "difficulty": "medium",
+      "question": "统计大板的妥投量",
+      "ok": false,
+      "error": "exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (request_id: bf12194a-82bf-4038-9b56-12ca4bca26ae)', 'type': 'unknown_error', 'param': None, 'code': 'invalid_request_error'}}",
+      "sql": "",
+      "tables": [],
+      "metrics": [],
+      "understanding": {},
+      "answer": null,
+      "validation": null,
+      "rows_preview": [],
+      "latency": 1.6,
+      "trace": null,
+      "scores": {
+        "ok": {
+          "status": false,
+          "detail": "ok=False 期望=True error=exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (reques"
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": false,
+          "detail": "缺表=['ods_tu_large_handcart_order_all'] 实际=[]"
+        },
+        "metrics": {
+          "status": false,
+          "detail": "缺指标=['大板完单量'] 实际=[]"
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": ""
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        },
+        "intent": {
+          "status": false,
+          "detail": "got=None 期望=summary"
+        }
+      }
+    },
+    {
+      "id": "g031",
+      "name": "同义词-新增客户",
+      "category": "synonym",
+      "difficulty": "medium",
+      "question": "统计新增客户数",
+      "ok": false,
+      "error": "exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (request_id: fed0b4be-00ac-42ae-b648-4db650a65534)', 'type': 'unknown_error', 'param': None, 'code': 'invalid_request_error'}}",
+      "sql": "",
+      "tables": [],
+      "metrics": [],
+      "understanding": {},
+      "answer": null,
+      "validation": null,
+      "rows_preview": [],
+      "latency": 1.73,
+      "trace": null,
+      "scores": {
+        "ok": {
+          "status": false,
+          "detail": "ok=False 期望=True error=exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (reques"
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": false,
+          "detail": "缺表=['ods_tu_customer_all'] 实际=[]"
+        },
+        "metrics": {
+          "status": false,
+          "detail": "缺指标=['注册客户数'] 实际=[]"
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": ""
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        },
+        "intent": {
+          "status": false,
+          "detail": "got=None 期望=summary"
+        }
+      }
+    },
+    {
+      "id": "g014",
+      "name": "业务术语-线上订单口径",
+      "category": "business_term",
+      "difficulty": "medium",
+      "question": "统计线上订单口径的订单量",
+      "ok": false,
+      "error": "exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (request_id: e4975bac-e3f0-4ca4-a1b4-f5f8c7bf2d77)', 'type': 'unknown_error', 'param': None, 'code': 'invalid_request_error'}}",
+      "sql": "",
+      "tables": [],
+      "metrics": [],
+      "understanding": {},
+      "answer": null,
+      "validation": null,
+      "rows_preview": [],
+      "latency": 2.18,
+      "trace": null,
+      "scores": {
+        "ok": {
+          "status": false,
+          "detail": "ok=False 期望=True error=exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (reques"
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": null,
+          "detail": ""
+        },
+        "metrics": {
+          "status": false,
+          "detail": "缺指标=['线上订单'] 实际=[]"
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": false,
+          "detail": "SQL缺谓词=['is_salesman = 0', 'is_service_staff in (0, 4, 5)']"
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": ""
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        },
+        "intent": {
+          "status": false,
+          "detail": "got=None 期望=summary"
+        }
+      }
+    },
+    {
+      "id": "g015",
+      "name": "业务术语-代驾调度发单",
+      "category": "business_term",
+      "difficulty": "medium",
+      "question": "统计代驾调度发单的订单量",
+      "ok": false,
+      "error": "exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (request_id: 1b452c5d-726e-4926-bc0e-869ca328b406)', 'type': 'unknown_error', 'param': None, 'code': 'invalid_request_error'}}",
+      "sql": "",
+      "tables": [],
+      "metrics": [],
+      "understanding": {},
+      "answer": null,
+      "validation": null,
+      "rows_preview": [],
+      "latency": 1.99,
+      "trace": null,
+      "scores": {
+        "ok": {
+          "status": false,
+          "detail": "ok=False 期望=True error=exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (reques"
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": null,
+          "detail": ""
+        },
+        "metrics": {
+          "status": null,
+          "detail": ""
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": false,
+          "detail": "SQL缺谓词=['is_service_staff = 2']"
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": ""
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        },
+        "intent": {
+          "status": false,
+          "detail": "got=None 期望=summary"
+        }
+      }
+    },
+    {
+      "id": "g016",
+      "name": "易混淆指标-代驾完单率",
+      "category": "confusable_metric",
+      "difficulty": "hard",
+      "question": "查询代驾的完单率",
+      "ok": false,
+      "error": "exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (request_id: 641cd760-669b-4fcf-97dd-c7f47002309b)', 'type': 'unknown_error', 'param': None, 'code': 'invalid_request_error'}}",
+      "sql": "",
+      "tables": [],
+      "metrics": [],
+      "understanding": {},
+      "answer": null,
+      "validation": null,
+      "rows_preview": [],
+      "latency": 1.69,
+      "trace": null,
+      "scores": {
+        "ok": {
+          "status": false,
+          "detail": "ok=False 期望=True error=exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (reques"
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": false,
+          "detail": "缺表=['ods_valet_order_all'] 实际=[]"
+        },
+        "metrics": {
+          "status": false,
+          "detail": "缺指标=['代驾完单率'] 实际=[]"
+        },
+        "forbidden": {
+          "status": true,
+          "detail": "误召回指标=[]"
+        },
+        "sql_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": ""
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        },
+        "intent": {
+          "status": false,
+          "detail": "got=None 期望=summary"
+        }
+      }
+    },
+    {
+      "id": "g017",
+      "name": "易混淆指标-大板完单量",
+      "category": "confusable_metric",
+      "difficulty": "hard",
+      "question": "查询大板的完单量",
+      "ok": true,
+      "error": "",
+      "sql": "SELECT COUNT(*) AS \"大板完单量\" FROM ctc_data_warehouse.ods_tu_large_handcart_order_all WHERE state = 6",
+      "tables": [
+        "ods_tu_large_handcart_order_all",
+        "dwd_tu_order_all",
+        "ods_valet_order_all"
+      ],
+      "metrics": [
+        "完单量",
+        "大板完单量",
+        "订单量",
+        "代驾完单量"
+      ],
+      "understanding": {
+        "intent": "summary",
+        "metrics": [],
+        "entities": [],
+        "dimensions": [],
+        "time_range": "",
+        "filters": [],
+        "ambiguity": "",
+        "degraded": true
+      },
+      "answer": "大板完单量为 37874 单。该数字表示大板运输订单中状态为“完单”的订单笔数。\n\n注：本次按大板运输订单中状态为“完单”（state=6）的口径计算。",
+      "validation": [
+        {
+          "severity": "warning",
+          "tier": "P1",
+          "rule": "metric_status",
+          "message": "命中指标的权威口径要求使用 status∈{40, 6}，但 SQL 中未发现对应 status 过滤",
+          "suggestion": "按指标定义把正确的 status 值写进 SQL（如 代驾完单=status=40、通用完单=status=6）"
+        }
+      ],
+      "rows_preview": [
+        [
+          37874
+        ]
+      ],
+      "latency": 4.98,
+      "trace": [
+        {
+          "step": "enrich",
+          "ms": 0.0
+        },
+        {
+          "step": "understand",
+          "ms": 782.9
+        },
+        {
+          "step": "retrieve",
+          "ms": 32.1
+        },
+        {
+          "step": "resolve_prompt",
+          "ms": 4.7
+        },
+        {
+          "step": "generate",
+          "ms": 877.5
+        },
+        {
+          "step": "validate",
+          "ms": 5.3
+        },
+        {
+          "step": "execute",
+          "ms": 315.2
+        },
+        {
+          "step": "result_validate_answer",
+          "ms": 2958.9
+        }
+      ],
+      "scores": {
+        "ok": {
+          "status": true,
+          "detail": "ok=True 期望=True error="
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": true,
+          "detail": "缺表=[] 实际=['ods_tu_large_handcart_order_all', 'dwd_tu_order_all', 'ods_valet_order_all']"
+        },
+        "metrics": {
+          "status": true,
+          "detail": "缺指标=[] 实际=['完单量', '大板完单量', '订单量', '代驾完单量']"
+        },
+        "forbidden": {
+          "status": false,
+          "detail": "误召回指标=['代驾完单量', '完单量']"
+        },
+        "sql_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": ""
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无依据表=[]"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        },
+        "intent": {
+          "status": true,
+          "detail": "got=summary 期望=summary"
+        }
+      }
+    },
+    {
+      "id": "g018",
+      "name": "易混淆字段-代驾status=40",
+      "category": "confusable_field",
+      "difficulty": "hard",
+      "question": "统计代驾的完单量",
+      "ok": true,
+      "error": "",
+      "sql": "SELECT COUNT(*) AS \"代驾完单量\" FROM ctc_data_warehouse.ods_valet_order_all WHERE status = 40",
+      "tables": [
+        "ods_valet_order_all"
+      ],
+      "metrics": [
+        "代驾完单量"
+      ],
+      "understanding": {
+        "intent": "summary",
+        "metrics": [
+          "代驾完单量"
+        ],
+        "entities": [
+          "代驾订单"
+        ],
+        "dimensions": [],
+        "time_range": "",
+        "filters": [],
+        "ambiguity": "",
+        "degraded": false
+      },
+      "answer": "代驾完单量共计 13,354 单。该数字统计的是代驾订单中状态为「已完成」的订单笔数，反映的是实际完成服务的代驾订单规模。\n\n注：本次按代驾订单状态为「已完成」（status=40）的口径计算。",
+      "validation": [],
+      "rows_preview": [
+        [
+          13354
+        ]
+      ],
+      "latency": 3.39,
+      "trace": [
+        {
+          "step": "enrich",
+          "ms": 0.0
+        },
+        {
+          "step": "understand",
+          "ms": 933.8
+        },
+        {
+          "step": "retrieve",
+          "ms": 45.0
+        },
+        {
+          "step": "resolve_prompt",
+          "ms": 4.8
+        },
+        {
+          "step": "generate",
+          "ms": 778.3
+        },
+        {
+          "step": "validate",
+          "ms": 2.4
+        },
+        {
+          "step": "execute",
+          "ms": 261.5
+        },
+        {
+          "step": "result_validate_answer",
+          "ms": 1361.7
+        }
+      ],
+      "scores": {
+        "ok": {
+          "status": true,
+          "detail": "ok=True 期望=True error="
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": true,
+          "detail": "缺表=[] 实际=['ods_valet_order_all']"
+        },
+        "metrics": {
+          "status": true,
+          "detail": "缺指标=[] 实际=['代驾完单量']"
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": true,
+          "detail": "SQL缺谓词=[]"
+        },
+        "sql_not_contains": {
+          "status": true,
+          "detail": "SQL含禁止谓词=[]"
+        },
+        "time": {
+          "status": null,
+          "detail": ""
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无依据表=[]"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        },
+        "intent": {
+          "status": true,
+          "detail": "got=summary 期望=summary"
+        }
+      }
+    },
+    {
+      "id": "g019",
+      "name": "易混淆字段-通用status=6",
+      "category": "confusable_field",
+      "difficulty": "hard",
+      "question": "查询完单金额",
+      "ok": false,
+      "error": "exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (request_id: f48882ff-a554-4fc6-ba61-21d2cc1e07cb)', 'type': 'unknown_error', 'param': None, 'code': 'invalid_request_error'}}",
+      "sql": "",
+      "tables": [],
+      "metrics": [],
+      "understanding": {},
+      "answer": null,
+      "validation": null,
+      "rows_preview": [],
+      "latency": 1.61,
+      "trace": null,
+      "scores": {
+        "ok": {
+          "status": false,
+          "detail": "ok=False 期望=True error=exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (reques"
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": false,
+          "detail": "缺表=['dwd_tu_order_all'] 实际=[]"
+        },
+        "metrics": {
+          "status": false,
+          "detail": "缺指标=['完单金额'] 实际=[]"
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": false,
+          "detail": "SQL缺谓词=['status = 6']"
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": ""
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        },
+        "intent": {
+          "status": false,
+          "detail": "got=None 期望=summary"
+        }
+      }
+    },
+    {
+      "id": "g020",
+      "name": "易混淆表-小板",
+      "category": "confusable_table",
+      "difficulty": "hard",
+      "question": "统计小板订单的订单量",
+      "ok": false,
+      "error": "exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (request_id: 01fda09c-f603-442d-b792-51f77c9bccba)', 'type': 'unknown_error', 'param': None, 'code': 'invalid_request_error'}}",
+      "sql": "",
+      "tables": [],
+      "metrics": [],
+      "understanding": {},
+      "answer": null,
+      "validation": null,
+      "rows_preview": [],
+      "latency": 1.63,
+      "trace": null,
+      "scores": {
+        "ok": {
+          "status": false,
+          "detail": "ok=False 期望=True error=exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (reques"
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": false,
+          "detail": "缺表=['dwd_tu_order_all'] 实际=[]"
+        },
+        "metrics": {
+          "status": null,
+          "detail": ""
+        },
+        "forbidden": {
+          "status": true,
+          "detail": "误召回指标=[]"
+        },
+        "sql_contains": {
+          "status": false,
+          "detail": "SQL缺谓词=['order_type = 1']"
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": ""
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        },
+        "intent": {
+          "status": false,
+          "detail": "got=None 期望=summary"
+        }
+      }
+    },
+    {
+      "id": "g021",
+      "name": "跨业务-大板对比代驾",
+      "category": "cross_domain",
+      "difficulty": "hard",
+      "question": "对比大板和代驾的完单量",
+      "ok": false,
+      "error": "exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (request_id: b4321931-305c-44d8-ae91-7e5830a6ca04)', 'type': 'unknown_error', 'param': None, 'code': 'invalid_request_error'}}",
+      "sql": "",
+      "tables": [],
+      "metrics": [],
+      "understanding": {},
+      "answer": null,
+      "validation": null,
+      "rows_preview": [],
+      "latency": 1.57,
+      "trace": null,
+      "scores": {
+        "ok": {
+          "status": false,
+          "detail": "ok=False 期望=True error=exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (reques"
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": false,
+          "detail": "缺表=['ods_tu_large_handcart_order_all', 'ods_valet_order_all'] 实际=[]"
+        },
+        "metrics": {
+          "status": false,
+          "detail": "缺指标=['大板完单量', '代驾完单量'] 实际=[]"
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": ""
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        },
+        "intent": {
+          "status": false,
+          "detail": "got=None 期望=compare"
+        }
+      }
+    },
+    {
+      "id": "g022",
+      "name": "多轮对话-上下文追问",
+      "category": "multi_turn",
+      "difficulty": "hard",
+      "question": "那上个月呢？",
+      "ok": false,
+      "error": "未识别到相关数据表/指标，已拦截（防止模型编造）",
+      "sql": "",
+      "tables": [],
+      "metrics": [],
+      "understanding": {},
+      "answer": null,
+      "validation": null,
+      "rows_preview": [],
+      "latency": 0.78,
+      "trace": null,
+      "scores": {
+        "ok": {
+          "status": true,
+          "detail": "ok=False 期望=False error=未识别到相关数据表/指标，已拦截（防止模型编造）"
+        },
+        "abstain": {
+          "status": true,
+          "detail": "abstain=True 期望=True"
+        },
+        "tables": {
+          "status": null,
+          "detail": ""
+        },
+        "metrics": {
+          "status": null,
+          "detail": ""
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": ""
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        }
+      }
+    },
+    {
+      "id": "g023",
+      "name": "无法回答-非数据领域",
+      "category": "unanswerable",
+      "difficulty": "hard",
+      "question": "查询股票收益率",
+      "ok": false,
+      "error": "exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (request_id: 54ba6b08-6ed7-4e8c-b815-5bdca992ceff)', 'type': 'unknown_error', 'param': None, 'code': 'invalid_request_error'}}",
+      "sql": "",
+      "tables": [],
+      "metrics": [],
+      "understanding": {},
+      "answer": null,
+      "validation": null,
+      "rows_preview": [],
+      "latency": 1.72,
+      "trace": null,
+      "scores": {
+        "ok": {
+          "status": true,
+          "detail": "ok=False 期望=False error=exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (reques"
+        },
+        "abstain": {
+          "status": true,
+          "detail": "abstain=True 期望=True"
+        },
+        "tables": {
+          "status": null,
+          "detail": ""
+        },
+        "metrics": {
+          "status": null,
+          "detail": ""
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": ""
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        }
+      }
+    },
+    {
+      "id": "g024",
+      "name": "无法回答-非取数请求",
+      "category": "unanswerable",
+      "difficulty": "easy",
+      "question": "帮我写一首诗",
+      "ok": false,
+      "error": "未识别到相关数据表/指标，已拦截（防止模型编造）",
+      "sql": "",
+      "tables": [],
+      "metrics": [],
+      "understanding": {},
+      "answer": null,
+      "validation": null,
+      "rows_preview": [],
+      "latency": 0.8,
+      "trace": null,
+      "scores": {
+        "ok": {
+          "status": true,
+          "detail": "ok=False 期望=False error=未识别到相关数据表/指标，已拦截（防止模型编造）"
+        },
+        "abstain": {
+          "status": true,
+          "detail": "abstain=True 期望=True"
+        },
+        "tables": {
+          "status": null,
+          "detail": ""
+        },
+        "metrics": {
+          "status": null,
+          "detail": ""
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": ""
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        }
+      }
+    },
+    {
+      "id": "g025",
+      "name": "数据不存在-虚构表",
+      "category": "missing_data",
+      "difficulty": "hard",
+      "question": "查询dragon_order表的订单量",
+      "ok": false,
+      "error": "exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (request_id: dcae1b75-0177-4e0d-a58f-0935bd42cb51)', 'type': 'unknown_error', 'param': None, 'code': 'invalid_request_error'}}",
+      "sql": "",
+      "tables": [],
+      "metrics": [],
+      "understanding": {},
+      "answer": null,
+      "validation": null,
+      "rows_preview": [],
+      "latency": 1.64,
+      "trace": null,
+      "scores": {
+        "ok": {
+          "status": true,
+          "detail": "ok=False 期望=False error=exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (reques"
+        },
+        "abstain": {
+          "status": true,
+          "detail": "abstain=True 期望=True"
+        },
+        "tables": {
+          "status": null,
+          "detail": ""
+        },
+        "metrics": {
+          "status": null,
+          "detail": ""
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": ""
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        }
+      }
+    },
+    {
+      "id": "g026",
+      "name": "数据不存在-员工工资",
+      "category": "missing_data",
+      "difficulty": "hard",
+      "question": "查询员工的工资数据",
+      "ok": false,
+      "error": "exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (request_id: b9b0f0a0-5980-46bd-8665-db571b5471e2)', 'type': 'unknown_error', 'param': None, 'code': 'invalid_request_error'}}",
+      "sql": "",
+      "tables": [],
+      "metrics": [],
+      "understanding": {},
+      "answer": null,
+      "validation": null,
+      "rows_preview": [],
+      "latency": 1.58,
+      "trace": null,
+      "scores": {
+        "ok": {
+          "status": true,
+          "detail": "ok=False 期望=False error=exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (reques"
+        },
+        "abstain": {
+          "status": true,
+          "detail": "abstain=True 期望=True"
+        },
+        "tables": {
+          "status": null,
+          "detail": ""
+        },
+        "metrics": {
+          "status": null,
+          "detail": ""
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": ""
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        }
+      }
+    },
+    {
+      "id": "g027",
+      "name": "权限不足-未开放指标",
+      "category": "permission",
+      "difficulty": "hard",
+      "question": "查询资金流水明细",
+      "ok": false,
+      "error": "exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (request_id: 4bf6d0f0-fcb7-4818-8ba8-de63bdbeda87)', 'type': 'unknown_error', 'param': None, 'code': 'invalid_request_error'}}",
+      "sql": "",
+      "tables": [],
+      "metrics": [],
+      "understanding": {},
+      "answer": null,
+      "validation": null,
+      "rows_preview": [],
+      "latency": 1.64,
+      "trace": null,
+      "scores": {
+        "ok": {
+          "status": true,
+          "detail": "ok=False 期望=False error=exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (reques"
+        },
+        "abstain": {
+          "status": true,
+          "detail": "abstain=True 期望=True"
+        },
+        "tables": {
+          "status": null,
+          "detail": ""
+        },
+        "metrics": {
+          "status": null,
+          "detail": ""
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": ""
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        }
+      }
+    },
+    {
+      "id": "g030",
+      "name": "指标组合-金额与比率",
+      "category": "normal",
+      "difficulty": "medium",
+      "question": "查询2026年9月的GMV、客单价、取消率和接单率",
+      "ok": false,
+      "error": "exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (request_id: 8151aa8c-63f8-40b3-86d6-6ec065f2e58c)', 'type': 'unknown_error', 'param': None, 'code': 'invalid_request_error'}}",
+      "sql": "",
+      "tables": [],
+      "metrics": [],
+      "understanding": {},
+      "answer": null,
+      "validation": null,
+      "rows_preview": [],
+      "latency": 1.68,
+      "trace": null,
+      "scores": {
+        "ok": {
+          "status": false,
+          "detail": "ok=False 期望=True error=exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (reques"
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": false,
+          "detail": "缺表=['dwd_tu_order_all'] 实际=[]"
+        },
+        "metrics": {
+          "status": false,
+          "detail": "缺指标=['GMV', '客单价', '取消率', '接单率'] 实际=[]"
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        },
+        "intent": {
+          "status": false,
+          "detail": "got=None 期望=summary"
+        }
+      }
+    },
+    {
+      "id": "g032",
+      "name": "复合指标-询价后发单率",
+      "category": "normal",
+      "difficulty": "hard",
+      "question": "查询2026年9月的询价后发单率",
+      "ok": false,
+      "error": "exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (request_id: 4966a5e4-5a4d-4760-b5b3-4270653b3a20)', 'type': 'unknown_error', 'param': None, 'code': 'invalid_request_error'}}",
+      "sql": "",
+      "tables": [],
+      "metrics": [],
+      "understanding": {},
+      "answer": null,
+      "validation": null,
+      "rows_preview": [],
+      "latency": 1.69,
+      "trace": null,
+      "scores": {
+        "ok": {
+          "status": false,
+          "detail": "ok=False 期望=True error=exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (reques"
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": null,
+          "detail": ""
+        },
+        "metrics": {
+          "status": false,
+          "detail": "缺指标=['询价后发单率'] 实际=[]"
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        },
+        "intent": {
+          "status": false,
+          "detail": "got=None 期望=summary"
+        }
+      }
+    },
+    {
+      "id": "g033",
+      "name": "复合指标-发单率",
+      "category": "normal",
+      "difficulty": "hard",
+      "question": "查询2026年9月的发单率",
+      "ok": false,
+      "error": "exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (request_id: e5bc3dd2-9eec-4970-8a6b-6947dcd4bf1d)', 'type': 'unknown_error', 'param': None, 'code': 'invalid_request_error'}}",
+      "sql": "",
+      "tables": [],
+      "metrics": [],
+      "understanding": {},
+      "answer": null,
+      "validation": null,
+      "rows_preview": [],
+      "latency": 1.66,
+      "trace": null,
+      "scores": {
+        "ok": {
+          "status": false,
+          "detail": "ok=False 期望=True error=exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (reques"
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": null,
+          "detail": ""
+        },
+        "metrics": {
+          "status": false,
+          "detail": "缺指标=['发单率'] 实际=[]"
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        },
+        "intent": {
+          "status": false,
+          "detail": "got=None 期望=summary"
+        }
+      }
+    },
+    {
+      "id": "g034",
+      "name": "边界-跨年区间",
+      "category": "boundary",
+      "difficulty": "hard",
+      "question": "查询2025年12月到2026年1月的订单量",
+      "ok": false,
+      "error": "exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (request_id: f0223cdf-71f2-4cc4-b000-55a285eab6fa)', 'type': 'unknown_error', 'param': None, 'code': 'invalid_request_error'}}",
+      "sql": "",
+      "tables": [],
+      "metrics": [],
+      "understanding": {},
+      "answer": null,
+      "validation": null,
+      "rows_preview": [],
+      "latency": 1.78,
+      "trace": null,
+      "scores": {
+        "ok": {
+          "status": false,
+          "detail": "ok=False 期望=True error=exception: Error code: 402 - {'error': {'message': 'Insufficient Balance (reques"
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": false,
+          "detail": "缺表=['dwd_tu_order_all'] 实际=[]"
+        },
+        "metrics": {
+          "status": null,
+          "detail": ""
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": false,
+          "detail": "SQL缺谓词=['2025-12-01', '2026-02-01']"
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无 SQL（拒答/未生成）"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        },
+        "intent": {
+          "status": false,
+          "detail": "got=None 期望=summary"
+        }
+      }
+    }
+  ]
+}

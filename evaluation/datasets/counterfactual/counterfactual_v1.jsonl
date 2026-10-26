@@ -1,0 +1,6 @@
+{"id": "c001", "pair_id": "time_shift", "question": "查询2026年9月大板完单量", "changed_var": null}
+{"id": "c002", "pair_id": "time_shift", "question": "查询2026年10月大板完单量", "changed_var": "time"}
+{"id": "c003", "pair_id": "domain_shift", "question": "查询大板完单量", "changed_var": null}
+{"id": "c004", "pair_id": "domain_shift", "question": "查询代驾完单量", "changed_var": "business_domain"}
+{"id": "c005", "pair_id": "metric_shift", "question": "查询2026年9月的订单量", "changed_var": null, "time_sensitive": true}
+{"id": "c006", "pair_id": "metric_shift", "question": "查询2026年9月的完单量", "changed_var": "metric", "time_sensitive": true}

@@ -1,0 +1,64 @@
+[
+  {
+    "id": 1,
+    "name": "代驾订单量/完单量/完单率（status=40 口径）",
+    "question": "查询代驾订单的订单量、完单量、完单率",
+    "expected_ok": true,
+    "expected_tables": ["ods_valet_order_all"],
+    "expected_metrics": ["代驾订单量", "代驾完单量", "代驾完单率"],
+    "expected_sql_contains": ["status = 40"]
+  },
+  {
+    "id": 2,
+    "name": "线上订单口径（is_salesman=0 AND is_service_staff IN 0,4,5）",
+    "question": "统计线上订单的订单量",
+    "expected_ok": true,
+    "expected_metrics": ["线上订单"],
+    "expected_sql_contains": ["is_salesman = 0", "is_service_staff in (0, 4, 5)"]
+  },
+  {
+    "id": 3,
+    "name": "调度单口径（is_salesman=1 AND is_service_staff IN 1,2,3）",
+    "question": "统计调度单的订单量",
+    "expected_ok": true,
+    "expected_metrics": ["调度单"],
+    "expected_sql_contains": ["is_salesman = 1", "is_service_staff in (1, 2, 3)"]
+  },
+  {
+    "id": 4,
+    "name": "小板订单（dwd_tu_order_all 过滤 order_type=1）",
+    "question": "统计小板订单的订单量",
+    "expected_ok": true,
+    "expected_tables": ["dwd_tu_order_all"],
+    "expected_sql_contains": ["order_type = 1"]
+  },
+  {
+    "id": 5,
+    "name": "大板订单量",
+    "question": "统计大板订单的订单量",
+    "expected_ok": true,
+    "expected_tables": ["ods_tu_large_handcart_order_all"]
+  },
+  {
+    "id": 6,
+    "name": "客服调度身份（is_service_staff 字典）",
+    "question": "统计各客服调度身份的订单量",
+    "expected_ok": true,
+    "expected_sql_contains": ["is_service_staff"]
+  },
+  {
+    "id": 7,
+    "name": "代驾调度发单（is_service_staff=2）",
+    "question": "统计代驾调度发单的订单量",
+    "expected_ok": true,
+    "expected_sql_contains": ["is_service_staff = 2"]
+  },
+  {
+    "id": 8,
+    "name": "2025 注册客户/司机/发单客户（三表去重）",
+    "question": "查询2025年全年的注册客户数，注册司机数，发单客户数",
+    "expected_ok": true,
+    "expected_tables": ["ods_tu_customer_all", "ods_tu_driver_all"],
+    "expected_metrics": ["注册客户数", "注册司机数", "发单客户数"]
+  }
+]
