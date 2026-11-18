@@ -20,6 +20,7 @@ import config
 import config_store
 import knowledge
 import llm
+import exceptions
 import calendar_util
 
 
@@ -103,9 +104,15 @@ def understand(question, index=None):
                 break
         except Exception as e:
             print(f"⚠️ 查询理解失败（第 {attempt} 次）：{e}")
+            data = {}
+            # ★ 错误分类：4xx（余额不足/密钥失效/拒绝）不可重试，立即降级，别再白烧一次调用；
+            #   只有超时/网络这类 transient 才值得重试第二次。
+            le = exceptions.classify_llm_error(e)
+            if le is not None and le.kind == "fatal":
+                degraded = True
+                break
             if attempt >= 2:
                 degraded = True
-            data = {}
 
     result = {
         "intent": data.get("intent", "summary"),

@@ -1,0 +1,1797 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>知数AI · 企业 AI 数据知识工作台 · UI 设计原型 v2</title>
+<!--
+  ═══════════════════════════════════════════════════════════════════
+  知数AI · 高保真 UI 设计原型（独立设计稿蓝本 · 单文件自包含）
+  -----------------------------------------------------------------------
+  · 单文件：内联 CSS + 内联 JS，零外部依赖（无 CDN / 无字体外链 / 无图表库）
+  · 纯前端演示：不调用任何后端 API，不修改 frontend/ 下任何现有文件
+  · 严格区分「现有功能」与「架构预留」：
+      规划中项一律灰显 + 「规划中」标签 + 点击弹「该能力尚未实现，仅为架构预留」
+  · 所有聚合统计数值一律留「—」，演示数据均标注「示例数据 · 仅用于设计演示」
+  · 代码内中文注释逐块说明「对应哪个现有功能 / 哪块是架构预留」
+  ═══════════════════════════════════════════════════════════════════
+-->
+<style>
+/* ═══════════════════════════════════════════════════════════════
+   1. Design Token —— 严格按视觉规格，勿自创色板
+   ═══════════════════════════════════════════════════════════════ */
+:root{
+  /* 品牌与语义色 */
+  --brand:#3478F6;          /* 品牌主色 */
+  --brand-weak:#EAF1FE;     /* 主色浅底（仅用于选中态 / 弱强调） */
+  --bg:#F5F7FA;             /* 页面背景 */
+  --card:#FFFFFF;           /* 卡片背景 */
+  --ink:#17243A;            /* 主文字 */
+  --ink-2:#667085;          /* 次级文字 */
+  --success:#16A36A;
+  --warn:#E9A23B;
+  --danger:#DC5252;
+  --line:#E7EBF0;           /* 分割线 */
+  --code-bg:#1B2434;        /* SQL 编辑器 / 代码块深色底，仅用于技术区域 */
+
+  /* 字体 */
+  --font: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+
+  /* 字阶 */
+  --fs-title:20px;   /* 页面标题 */
+  --fs-module:16px;  /* 模块标题 */
+  --fs-card:14px;    /* 卡片标题 */
+  --fs-body:13px;    /* 正文 13-14px */
+  --fs-aux:12px;     /* 辅助 */
+
+  /* 圆角 */
+  --r-s:6px; --r-m:8px; --r-l:10px;
+
+  /* 间距 */
+  --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px; --s6:32px;
+
+  /* 控件高度 */
+  --h-ctrl:32px; --h-ctrl-lg:40px;
+
+  /* 行高 */
+  --lh:1.6;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   2. 基础重置
+   ═══════════════════════════════════════════════════════════════ */
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;height:100%}
+body{
+  font-family:var(--font);
+  font-size:var(--fs-body);
+  line-height:var(--lh);
+  color:var(--ink);
+  background:var(--bg);
+  -webkit-font-smoothing:antialiased;
+  overflow:hidden;
+}
+button,input,select,textarea{font-family:inherit;font-size:inherit;color:inherit}
+button{cursor:pointer}
+a{color:var(--brand);text-decoration:none}
+h1,h2,h3,h4,h5,p,dl,dd,dt{margin:0}
+.ico{width:16px;height:16px;flex:0 0 auto;display:inline-block;vertical-align:middle}
+.mono{font-family:var(--mono)}
+.muted{color:var(--ink-2)}
+.aux{font-size:var(--fs-aux);color:var(--ink-2)}
+.nowrap{white-space:nowrap}
+
+/* ═══════════════════════════════════════════════════════════════
+   3. 布局：左侧固定导航 232px + 顶部工具栏 56px + 中央工作区
+      min-width:0 / minmax(0,1fr) 保证 1280×800 不横向溢出
+   ═══════════════════════════════════════════════════════════════ */
+.app{display:grid;grid-template-columns:232px minmax(0,1fr);height:100vh;overflow:hidden}
+
+/* ── 左侧导航 ── */
+.sidebar{background:var(--card);border-right:1px solid var(--line);display:flex;flex-direction:column;min-width:0;overflow:hidden}
+.brand{height:56px;flex:0 0 56px;display:flex;align-items:center;gap:10px;padding:0 16px;border-bottom:1px solid var(--line)}
+.brand-logo{width:28px;height:28px;border-radius:var(--r-m);background:var(--brand);color:#fff;font-weight:700;font-size:14px;display:flex;align-items:center;justify-content:center;flex:0 0 auto;letter-spacing:-1px}
+.brand-txt b{font-size:15px;display:block;line-height:1.2;font-weight:700}
+.brand-txt span{font-size:11px;color:var(--ink-2);display:block;line-height:1.3;margin-top:2px}
+.side-nav{flex:1;min-height:0;overflow-y:auto;padding:8px 8px 16px}
+.nav-group{margin-bottom:12px}
+.nav-group-label{font-size:11px;color:#98A2B3;letter-spacing:1px;padding:6px 10px;display:flex;align-items:center;justify-content:space-between;gap:6px}
+.nav-group-label .admin-flag{font-size:10px;color:var(--ink-2);background:var(--bg);border:1px solid var(--line);border-radius:3px;padding:0 5px;letter-spacing:0;line-height:16px;white-space:nowrap}
+.nav-item{width:100%;display:flex;align-items:center;gap:9px;min-height:34px;padding:5px 10px;border:0;background:transparent;border-radius:var(--r-s);color:var(--ink);font-size:13px;text-align:left;line-height:1.4}
+.nav-item:hover{background:#F2F5FA}
+.nav-item.active{background:var(--brand-weak);color:var(--brand);font-weight:600}
+.nav-item .ico{color:var(--ink-2)}
+.nav-item.active .ico{color:var(--brand)}
+.nav-item .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.nav-item--planned{opacity:.58}
+.nav-item--planned:hover{background:#F7F8FA}
+.nav-parent{display:flex;align-items:center;gap:9px;min-height:32px;padding:5px 10px;color:var(--ink);font-size:13px}
+.nav-parent .ico{color:var(--ink-2)}
+.nav-parent .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 规划中的父级项同样灰显 + 可点击弹说明，避免看起来像可用入口 */
+.nav-parent--planned{opacity:.58;cursor:pointer;border-radius:var(--r-s)}
+.nav-parent--planned:hover{background:#F7F8FA}
+.nav-children{margin:0 0 4px 17px;padding-left:8px;border-left:1px solid var(--line)}
+.nav-status{font-size:10px;line-height:16px;padding:0 5px;border-radius:3px;flex:0 0 auto;white-space:nowrap}
+.ns-existing{color:#5B6B86;background:#F0F3F8}
+.ns-planned{color:#8A94A6;background:#F2F4F7;border:1px solid var(--line)}
+.ns-partial{color:#9A742A;background:#FBF3E4;border:1px solid #F0E0BE}
+.side-foot{flex:0 0 auto;border-top:1px solid var(--line);padding:10px 12px}
+.me{display:flex;align-items:center;gap:9px;min-width:0}
+.me-avatar{width:30px;height:30px;border-radius:50%;background:#E8EEFB;color:var(--brand);font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+.me-info{flex:1;min-width:0}
+.me-info b{font-size:12px;display:block;line-height:1.4}
+.me-info span{font-size:11px;color:var(--ink-2);display:block}
+
+/* ── 主区与顶部工具栏 ── */
+.main{display:flex;flex-direction:column;min-width:0;overflow:hidden}
+.topbar{height:56px;flex:0 0 56px;background:var(--card);border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px;padding:0 16px;min-width:0}
+.tb-crumb{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--ink-2);min-width:0;flex:1;overflow:hidden;white-space:nowrap}
+.tb-crumb .cur{color:var(--ink);font-weight:600;overflow:hidden;text-overflow:ellipsis}
+.tb-sep{color:#C4CDD9}
+.tb-right{display:flex;align-items:center;gap:10px;flex:0 0 auto}
+.quick{display:flex;align-items:center;gap:6px}
+.quick label{font-size:11px;color:var(--ink-2);white-space:nowrap}
+.quick select{height:32px;max-width:186px;border:1px solid var(--line);background:#fff;border-radius:6px;padding:0 26px 0 9px;font-size:12px;color:var(--ink);appearance:none;cursor:pointer}
+.quick{position:relative}
+.quick::after{content:"";position:absolute;right:9px;top:50%;width:5px;height:5px;border-right:1.5px solid #98A2B3;border-bottom:1.5px solid #98A2B3;transform:translateY(-70%) rotate(45deg);pointer-events:none}
+.gsearch{position:relative;flex:0 0 auto}
+.gsearch .ds-input{width:186px;padding-left:30px}
+.gsearch .gs-ico{position:absolute;left:9px;top:50%;transform:translateY(-50%);width:14px;height:14px;color:#98A2B3;pointer-events:none}
+.ds-src{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-2);white-space:nowrap;border:1px solid var(--line);border-radius:6px;padding:0 9px;height:32px;background:#fff}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--success);flex:0 0 auto}
+.icon-btn{width:32px;height:32px;border:1px solid var(--line);background:#fff;border-radius:6px;display:flex;align-items:center;justify-content:center;position:relative;color:var(--ink-2);flex:0 0 auto}
+.icon-btn:hover{background:#F7F9FC;color:var(--ink)}
+.icon-btn .badge{position:absolute;top:-5px;right:-5px;min-width:15px;height:15px;border-radius:8px;background:var(--danger);color:#fff;font-size:10px;line-height:15px;text-align:center;padding:0 3px}
+.viewswitch{display:flex;border:1px solid var(--line);border-radius:6px;overflow:hidden;height:32px;flex:0 0 auto}
+.viewswitch button{border:0;background:#fff;padding:0 10px;font-size:12px;color:var(--ink-2);white-space:nowrap}
+.viewswitch button.on{background:var(--brand);color:#fff;font-weight:600}
+.avatar{width:32px;height:32px;border-radius:50%;background:#E8EEFB;color:var(--brand);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;flex:0 0 auto}
+
+/* ── 工作区 / 页面骨架 ── */
+.work{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;background:var(--bg)}
+.page{display:none;flex:1;min-height:0;flex-direction:column}
+.page.active{display:flex}
+.page-head{flex:0 0 auto;padding:16px 24px 14px;display:flex;align-items:flex-start;justify-content:space-between;gap:16px;border-bottom:1px solid var(--line);background:var(--card)}
+.page-head-txt{min-width:0}
+.ph-crumb{font-size:12px;color:#98A2B3;margin-bottom:7px}
+.ph-crumb span{margin:0 5px;color:#CBD3DE}
+.ph-crumb .cur{color:var(--ink-2);margin:0}
+.page-head h1{font-size:var(--fs-title);line-height:1.4;font-weight:650;margin-bottom:4px}
+.page-head p{color:var(--ink-2);font-size:13px;line-height:1.6}
+.page-body{flex:1;min-height:0;overflow-y:auto;padding:20px 24px 40px}
+.page-body--fill{overflow:hidden;padding:0;display:flex;flex-direction:column}
+
+/* 图例说明（每页右上角，由 renderLegends() 统一注入） */
+.legend{flex:0 0 auto;text-align:right;min-width:196px}
+.legend .lg-title{font-size:11px;color:#98A2B3;margin-bottom:7px}
+.legend .lg-row{display:flex;align-items:center;justify-content:flex-end;gap:14px;font-size:11px;color:var(--ink-2)}
+.legend .lg-item{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.legend .sw{width:8px;height:8px;border-radius:2px;display:inline-block}
+.legend .lg-note{font-size:10px;color:#A6B0BF;margin-top:6px;max-width:210px;line-height:1.55;margin-left:auto}
+
+/* ═══════════════════════════════════════════════════════════════
+   4. 统一组件类（Design System 全部由 CSS token 渲染）
+   ═══════════════════════════════════════════════════════════════ */
+/* 卡片 */
+.ds-card{background:var(--card);border:1px solid var(--line);border-radius:var(--r-m)}
+.ds-card-pad{padding:var(--s4)}
+.card-title{font-size:var(--fs-card);font-weight:650;margin-bottom:12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.module-title{font-size:var(--fs-module);font-weight:650;margin-bottom:12px}
+.sec-title{font-size:var(--fs-card);font-weight:650;margin-bottom:10px}
+.block{margin-bottom:16px}
+.block:last-child{margin-bottom:0}
+
+/* 按钮：主 / 次 / 危险 / 幽灵 / 尺寸 / 禁用 —— 只有一个主色，不给每个按钮换色 */
+.ds-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:var(--h-ctrl);padding:0 12px;border:1px solid var(--line);background:#fff;color:var(--ink);border-radius:var(--r-s);font-size:13px;line-height:1;white-space:nowrap;transition:background .15s,border-color .15s}
+.ds-btn:hover{background:#F7F9FC;border-color:#CFD8E6}
+.ds-btn .ico{width:14px;height:14px}
+.ds-btn-primary{background:var(--brand);border-color:var(--brand);color:#fff;font-weight:600}
+.ds-btn-primary:hover{background:#2B6BE0;border-color:#2B6BE0}
+.ds-btn-danger{color:var(--danger);border-color:#F0C9C9;background:#fff}
+.ds-btn-danger:hover{background:#FDF3F3;border-color:#E8A9A9}
+.ds-btn-ghost{border-color:transparent;background:transparent;color:var(--ink-2)}
+.ds-btn-ghost:hover{background:#F2F5FA;color:var(--ink)}
+.ds-btn-lg{height:var(--h-ctrl-lg);padding:0 18px;font-size:14px}
+.ds-btn-sm{height:28px;padding:0 9px;font-size:12px}
+.ds-btn:disabled,.ds-btn.is-disabled{opacity:.45;cursor:not-allowed}
+.btn-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+
+/* 输入框 / 下拉 / 文本域 */
+.ds-input,.ds-select,.ds-textarea{width:100%;height:var(--h-ctrl);padding:0 10px;border:1px solid var(--line);background:#fff;border-radius:var(--r-s);font-size:13px;outline:none;transition:border-color .15s,box-shadow .15s}
+.ds-input:focus,.ds-select:focus,.ds-textarea:focus{border-color:var(--brand);box-shadow:0 0 0 3px rgba(52,120,246,.12)}
+.ds-input::placeholder,.ds-textarea::placeholder{color:#A6B0BF}
+.ds-input-lg{height:var(--h-ctrl-lg)}
+.ds-textarea{height:auto;padding:9px 10px;line-height:1.6;resize:vertical;min-height:76px}
+.ds-select-wrap{position:relative;display:block}
+.ds-select-wrap::after{content:"";position:absolute;right:11px;top:50%;width:6px;height:6px;border-right:1.5px solid #98A2B3;border-bottom:1.5px solid #98A2B3;transform:translateY(-70%) rotate(45deg);pointer-events:none}
+.ds-select-wrap select{appearance:none;padding-right:28px;cursor:pointer}
+.field{margin-bottom:14px}
+.field label{display:block;font-size:12px;color:var(--ink-2);margin-bottom:6px}
+.field label .req{color:var(--danger)}
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 16px}
+
+/* 表格：长文本换行 + 容器兜底滚动 */
+.table-wrap{width:100%;overflow-x:auto;border:1px solid var(--line);border-radius:var(--r-m);background:#fff}
+.ds-table{width:100%;border-collapse:collapse;font-size:13px}
+.ds-table th{background:#FAFBFD;color:var(--ink-2);font-weight:600;font-size:12px;text-align:left;padding:10px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
+.ds-table td{padding:10px 12px;border-bottom:1px solid #EFF2F6;color:var(--ink);vertical-align:top;word-break:break-word;overflow-wrap:anywhere;line-height:1.6}
+.ds-table tbody tr:last-child td{border-bottom:0}
+.ds-table tbody tr:hover{background:#FAFCFF}
+.ds-table td .cell-clamp{max-width:340px}
+.ds-table .op-cell{white-space:nowrap}
+
+/* 状态标签 */
+.ds-tag{display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 7px;border-radius:4px;font-size:11px;line-height:1;white-space:nowrap;border:1px solid transparent;vertical-align:middle}
+.t-info{background:#EEF3FD;color:#2B6BE0;border-color:#D9E5FC}    /* 待处理 */
+.t-run{background:#FFF6E8;color:#B5791F;border-color:#F6E2BC}      /* 执行中 */
+.t-ok{background:#EAF7F0;color:#16A36A;border-color:#CBEAD9}       /* 成功 / 现有 */
+.t-err{background:#FDEDEE;color:#DC5252;border-color:#F5D2D4}      /* 失败 */
+.t-off{background:#F2F4F7;color:#7A8699;border-color:#E3E8EF}      /* 已停用 / 等待中 */
+.t-plan{background:#F2F4F7;color:#8A94A6;border-color:#E3E8EF}     /* 规划中 */
+.t-reserve{background:#F2F5FA;color:#5B6B86;border-color:#DDE5F0}  /* 预留 */
+.t-demo{background:#FFF9EC;color:#A9751B;border-color:#F2E2BC}     /* 示例数据 */
+.t-new{background:#EAF1FE;color:#2B6BE0;border-color:#CFE0FB}      /* 新增设计 */
+
+/* 空状态 / 加载骨架（灰色脉冲，无彩色渐变） */
+.ds-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:32px 20px;color:var(--ink-2);gap:8px;min-height:148px}
+.ds-empty .ico{width:32px;height:32px;color:#C4CDD9}
+.ds-empty .t{font-size:14px;font-weight:600;color:#5B6B86}
+.ds-empty .s{font-size:12px;max-width:360px;line-height:1.7}
+.ds-skeleton{background:#EAEFF6;border-radius:4px;height:12px;animation:skpulse 1.3s ease-in-out infinite}
+@keyframes skpulse{0%,100%{opacity:1}50%{opacity:.42}}
+.sk-line{margin-bottom:10px}
+
+/* 抽屉 */
+.ds-overlay{position:fixed;inset:0;background:rgba(23,36,58,.38);z-index:50;display:none}
+.ds-overlay.show{display:block}
+.ds-drawer{position:fixed;top:0;right:0;height:100vh;width:420px;max-width:92vw;background:#fff;z-index:51;box-shadow:-8px 0 28px rgba(23,36,58,.12);transform:translateX(100%);transition:transform .22s ease;display:flex;flex-direction:column}
+.ds-drawer.show{transform:translateX(0)}
+.drawer-head{flex:0 0 auto;padding:16px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:10px}
+.drawer-head h3{font-size:var(--fs-module);font-weight:650}
+.drawer-body{flex:1;min-height:0;overflow-y:auto;padding:18px 20px 28px}
+.drawer-foot{flex:0 0 auto;padding:12px 20px;border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:8px}
+
+/* 弹窗 */
+.ds-modal{position:fixed;left:50%;top:50%;transform:translate(-50%,-46%);width:440px;max-width:92vw;background:#fff;border-radius:var(--r-l);box-shadow:0 18px 48px rgba(23,36,58,.22);z-index:60;display:none;flex-direction:column;max-height:86vh}
+.ds-modal.show{display:flex;animation:modalIn .18s ease}
+@keyframes modalIn{from{opacity:0;transform:translate(-50%,-50%)}to{opacity:1;transform:translate(-50%,-46%)}}
+.modal-head{padding:16px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:var(--fs-module);font-weight:650}
+.modal-body{padding:18px 20px;overflow-y:auto;line-height:1.7}
+.modal-foot{padding:12px 20px;border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:8px}
+
+/* Toast */
+.toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%) translateY(12px);background:var(--ink);color:#fff;border-radius:var(--r-m);padding:9px 16px;font-size:13px;z-index:80;opacity:0;pointer-events:none;transition:all .2s;max-width:80vw;box-shadow:0 8px 24px rgba(23,36,58,.25);text-align:center}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+
+/* 键值明细 / 表单（抽屉与详情页复用） */
+.kv{display:grid;grid-template-columns:104px minmax(0,1fr);gap:10px 12px;font-size:13px}
+.kv dt{color:var(--ink-2);font-size:12px;padding-top:1px}
+.kv dd{color:var(--ink);word-break:break-word;line-height:1.65}
+.kv dd .sub{display:block;font-size:11px;color:#A6B0BF;margin-top:2px}
+
+/* 子页签 */
+.ds-tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin-bottom:16px;flex-wrap:wrap}
+.ds-tabs button{border:0;background:transparent;padding:9px 14px;font-size:13px;color:var(--ink-2);border-bottom:2px solid transparent;margin-bottom:-1px;display:inline-flex;align-items:center;gap:6px;white-space:nowrap;border-radius:0}
+.ds-tabs button:hover{color:var(--ink)}
+.ds-tabs button.on{color:var(--brand);border-bottom-color:var(--brand);font-weight:600}
+.ds-tabs button.is-planned{opacity:.55}
+
+/* 统计卡（数值一律留「—」，不编造统计） */
+.stat-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:18px}
+.stat{background:#fff;border:1px solid var(--line);border-radius:var(--r-m);padding:14px 16px;min-width:0}
+.stat .lbl{font-size:12px;color:var(--ink-2)}
+.stat .num{font-size:24px;font-weight:650;line-height:1.3;margin:6px 0 2px;color:var(--ink)}
+.stat .num.dash{color:#B4BECC;font-weight:500}
+.stat .cap{font-size:11px;color:#A6B0BF;line-height:1.5}
+
+/* 演示数据标记 */
+.demo-note{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:#A9751B;background:#FFF9EC;border:1px solid #F2E2BC;border-radius:4px;padding:2px 7px;line-height:1.6}
+.demo-banner{display:flex;align-items:flex-start;gap:8px;background:#FCFDFE;border:1px dashed #CBD8EA;border-radius:6px;padding:8px 10px;font-size:12px;color:#5B6B86;line-height:1.6;margin-bottom:12px}
+.demo-banner .ico{width:14px;height:14px;color:var(--brand);margin-top:2px}
+.demo-line{font-size:11px;color:#98A2B3;margin:0 0 10px}
+
+/* 分段演示控制（纯前端交互，不构成功能） */
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:6px;overflow:hidden;background:#fff;height:28px;flex:0 0 auto}
+.seg button{border:0;background:#fff;padding:0 10px;font-size:11px;color:var(--ink-2);white-space:nowrap;border-right:1px solid var(--line)}
+.seg button:last-child{border-right:0}
+.seg button.on{background:var(--brand);color:#fff;font-weight:600}
+.seg-label{font-size:11px;color:#98A2B3;white-space:nowrap}
+.toolbar-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px}
+
+/* ═══════════════════════════════════════════════════════════════
+   5. 页面专属样式
+   ═══════════════════════════════════════════════════════════════ */
+/* ── P1 · AI 智能取数工作台：三栏 ── */
+.ask-grid{flex:1;min-height:0;display:grid;grid-template-columns:208px minmax(0,1fr) 272px}
+.ask-grid.collapsed{grid-template-columns:208px minmax(0,1fr) 44px}
+.ask-left{display:flex;flex-direction:column;min-height:0;min-width:0;background:#FCFDFE;border-right:1px solid var(--line)}
+.al-head{flex:0 0 auto;padding:12px;border-bottom:1px solid var(--line)}
+.al-head .ds-btn{width:100%}
+.al-list{flex:1;min-height:0;overflow-y:auto;padding:8px}
+.al-item{width:100%;text-align:left;border:1px solid transparent;background:transparent;border-radius:6px;padding:9px 10px;margin-bottom:3px;display:block}
+.al-item:hover{background:#F2F5FA}
+.al-item.on{background:#fff;border-color:var(--line);box-shadow:0 1px 3px rgba(23,36,58,.04)}
+.al-item .q{font-size:12px;color:var(--ink);line-height:1.55;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.al-item .m{font-size:11px;color:#A6B0BF;margin-top:5px;display:flex;align-items:center;gap:6px}
+.ask-center{display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--bg)}
+.ask-toolbar{flex:0 0 auto;padding:10px 20px;background:var(--card);border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.ask-scroll{flex:1;min-height:0;overflow-y:auto;padding:20px 24px 28px}
+.ask-composer{flex:0 0 auto;padding:10px 24px 14px;background:var(--card);border-top:1px solid var(--line)}
+.ask-right{display:flex;flex-direction:column;min-width:0;min-height:0;background:#fff;border-left:1px solid var(--line)}
+.ev-full{display:flex;flex-direction:column;min-height:0;flex:1}
+.ev-head{flex:0 0 auto;padding:12px 14px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:8px}
+.ev-head b{font-size:13px}
+.ev-body{flex:1;min-height:0;overflow-y:auto;padding:14px}
+.ev-rail{display:none;flex:1;align-items:flex-start;justify-content:center;padding-top:14px}
+.ev-rail button{writing-mode:vertical-rl;font-size:11px;letter-spacing:2px;color:var(--ink-2);border:1px solid var(--line);background:#FAFBFD;border-radius:6px;padding:10px 6px}
+.ask-grid.collapsed .ev-full{display:none}
+.ask-grid.collapsed .ev-rail{display:flex}
+
+/* 欢迎 / 示例问题卡（新增设计） */
+.welcome{text-align:center;padding:26px 10px 6px}
+.welcome .w-ico{width:44px;height:44px;border-radius:12px;background:var(--brand-weak);color:var(--brand);display:flex;align-items:center;justify-content:center;margin:0 auto 12px}
+.welcome .w-ico .ico{width:22px;height:22px}
+.welcome h2{font-size:18px;font-weight:650;margin-bottom:6px}
+.welcome p{color:var(--ink-2);font-size:13px}
+.ex-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:18px 0 16px}
+.ex-card{background:#fff;border:1px solid var(--line);border-radius:8px;padding:12px 13px;text-align:left;font-size:13px;line-height:1.6;display:flex;flex-direction:column;gap:8px;min-height:82px;color:var(--ink)}
+.ex-card:hover{border-color:var(--brand);box-shadow:0 2px 8px rgba(52,120,246,.08)}
+.ex-card .ex-top{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.ex-card .ex-q{flex:1}
+.ex-card .ex-hint{font-size:11px;color:#98A2B3}
+.composer{background:#fff;border:1px solid var(--line);border-radius:var(--r-l);padding:12px;box-shadow:0 2px 10px rgba(23,36,58,.04)}
+.composer textarea{border:0;outline:none;resize:none;width:100%;min-height:62px;font-size:13px;line-height:1.6;padding:0;background:transparent}
+.composer-foot{display:flex;align-items:center;justify-content:space-between;margin-top:8px;padding-top:10px;border-top:1px solid var(--line);gap:10px}
+.composer-foot .hint{font-size:11px;color:#A6B0BF}
+
+/* 对话消息 */
+.msg{display:flex;gap:10px;margin-bottom:18px}
+.msg-avatar{width:28px;height:28px;border-radius:8px;flex:0 0 28px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700}
+.msg.user .msg-avatar{background:#E8EEFB;color:var(--brand)}
+.msg.ai .msg-avatar{background:var(--brand);color:#fff}
+.msg-content{flex:1;min-width:0}
+.msg-bubble{background:#fff;border:1px solid var(--line);border-radius:8px;padding:12px 14px;font-size:13px;line-height:1.7}
+.msg.user .msg-bubble{background:#EAF1FE;border-color:#D9E5FC}
+
+/* 执行过程时间线（只展示系统真实执行步骤，不展示模型思维链） */
+.timeline{position:relative;margin-top:4px}
+.tl-step{display:flex;gap:10px;position:relative;padding-bottom:13px}
+.tl-step:last-child{padding-bottom:0}
+.tl-rail{position:absolute;left:9px;top:19px;bottom:-2px;width:1.5px;background:var(--line)}
+.tl-step:last-child .tl-rail{display:none}
+.tl-dot{width:19px;height:19px;border-radius:50%;flex:0 0 19px;display:flex;align-items:center;justify-content:center;border:1.5px solid var(--line);background:#fff;z-index:1;font-size:10px;color:#fff;font-weight:700;line-height:1}
+.tl-step.ok .tl-dot{background:var(--success);border-color:var(--success)}
+.tl-step.run .tl-dot{background:var(--brand);border-color:var(--brand)}
+.tl-step.err .tl-dot{background:var(--danger);border-color:var(--danger)}
+.tl-step.wait .tl-dot{border-color:#D6DEE9;background:#F7F9FC}
+.tl-body{flex:1;min-width:0;padding-top:1px}
+.tl-name{font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.tl-step.wait .tl-name{color:#98A2B3;font-weight:400}
+.tl-desc{font-size:12px;color:var(--ink-2);margin-top:3px;line-height:1.6}
+.tl-fail{background:#FDF3F3;border:1px solid #F5D2D4;border-radius:6px;padding:8px 10px;margin-top:7px;font-size:12px;color:#9B3A3A;line-height:1.7}
+
+/* SQL 代码块（深色技术区，默认折叠） */
+.sql-box{background:var(--code-bg);color:#D8E1F0;border-radius:8px;padding:14px 16px;font-family:var(--mono);font-size:12px;line-height:1.75;overflow-x:auto;white-space:pre;border:1px solid #0F1622;margin-top:10px}
+.sql-box .cm{color:#6B7A93}
+.sql-box .kw{color:#7FA9FF}
+.sql-box .str{color:#9BD3A6}
+
+/* 结果动作条 / 反馈条 */
+.action-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:12px}
+.feedback-bar{display:flex;align-items:center;gap:10px;background:#fff;border:1px solid var(--line);border-radius:8px;padding:9px 12px;font-size:12px;color:var(--ink-2);flex-wrap:wrap;margin-top:12px}
+
+/* 真实存在的信息卡 */
+.info-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(224px,1fr));gap:12px;margin-top:14px}
+.info-card{background:#fff;border:1px solid var(--line);border-radius:8px;padding:13px 14px;min-width:0}
+.info-card h5{font-size:12px;font-weight:650;color:var(--ink-2);margin-bottom:10px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.chain{display:flex;flex-wrap:wrap;gap:5px;align-items:center}
+.chain .arw{color:#C4CDD9;font-size:11px}
+.chip-row{display:flex;flex-wrap:wrap;gap:6px}
+.kv-mini{display:grid;grid-template-columns:64px minmax(0,1fr);gap:6px 8px;font-size:12px}
+.kv-mini dt{color:var(--ink-2)}
+.kv-mini dd{color:var(--ink);word-break:break-word}
+.clarify-box{background:#FAFBFD;border:1px solid var(--line);border-radius:6px;padding:10px;font-size:12px;line-height:1.7}
+.clarify-opt{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line);background:#fff;border-radius:4px;padding:3px 8px;font-size:12px;margin:4px 5px 0 0}
+.inline-modify{display:flex;gap:8px;align-items:center;margin-top:12px}
+.inline-modify .ds-input{flex:1;min-width:0}
+
+/* 数据依据面板 */
+.ev-sec{margin-bottom:16px}
+.ev-sec:last-child{margin-bottom:0}
+.ev-sec h5{font-size:12px;color:var(--ink-2);font-weight:650;margin-bottom:8px;display:flex;align-items:center;gap:6px}
+.ev-list{display:flex;flex-direction:column;gap:6px}
+.ev-item{background:#FAFBFD;border:1px solid var(--line);border-radius:6px;padding:7px 9px;font-size:12px;line-height:1.6}
+.ev-item b{font-size:12px;font-weight:600;display:block;color:var(--ink)}
+.ev-item span{color:var(--ink-2)}
+
+/* 架构预留骨架（无图表、无数字） */
+.skel-region{border:1px dashed #D2DBE8;border-radius:8px;background:#FBFCFE;min-height:132px;display:flex;flex-direction:column;overflow:hidden}
+.skel-region .sr-head{font-size:12px;color:#8A94A6;padding:8px 12px;border-bottom:1px dashed var(--line);background:#fff}
+.skel-region .ds-empty{flex:1;min-height:92px}
+.reserve-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+
+/* 审核页 */
+.audit-grid{display:grid;grid-template-columns:minmax(0,300px) minmax(0,1fr);gap:14px}
+.audit-list{display:flex;flex-direction:column;gap:8px}
+.audit-item{border:1px solid var(--line);border-radius:8px;background:#fff;padding:11px 12px;text-align:left;width:100%}
+.audit-item:hover{border-color:#C9D6EA}
+.audit-item.on{border-color:var(--brand);box-shadow:0 0 0 3px rgba(52,120,246,.09)}
+.audit-item .t{font-size:13px;font-weight:600;display:flex;align-items:center;justify-content:space-between;gap:8px}
+.audit-item .s{font-size:11px;color:var(--ink-2);margin-top:6px;line-height:1.6}
+
+/* 评测指标（数值一律「—」） */
+.eval-group{margin-bottom:18px}
+.eval-group h4{font-size:13px;font-weight:650;margin-bottom:10px;color:var(--ink);display:flex;align-items:center;gap:8px}
+.eval-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(196px,1fr));gap:10px}
+.eval-item{border:1px solid var(--line);border-radius:8px;background:#fff;padding:12px 13px;min-width:0}
+.eval-item .n{font-size:13px;font-weight:600;color:var(--ink)}
+.eval-item .v{font-size:22px;font-weight:500;color:#B4BECC;line-height:1.3;margin:5px 0 3px}
+.eval-item .c{font-size:11px;color:#A6B0BF;line-height:1.55;min-height:32px}
+
+/* Design System 展示 */
+.ds-sec{margin-bottom:26px}
+.ds-sec>h3{font-size:var(--fs-module);font-weight:650;margin-bottom:12px}
+.swatches{display:grid;grid-template-columns:repeat(auto-fill,minmax(148px,1fr));gap:10px}
+.swatch{border:1px solid var(--line);border-radius:8px;overflow:hidden;background:#fff}
+.swatch .chip{height:54px}
+.swatch .meta{padding:8px 10px;font-size:11px;line-height:1.6}
+.swatch .meta b{display:block;font-size:12px;color:var(--ink)}
+.swatch .meta span{color:var(--ink-2);font-family:var(--mono)}
+.scale-row{display:flex;align-items:baseline;gap:14px;padding:8px 0;border-bottom:1px dashed var(--line)}
+.scale-row .lab{width:118px;font-size:11px;color:var(--ink-2);flex:0 0 auto}
+.spacing-row{display:flex;align-items:center;gap:12px;padding:5px 0;font-size:12px;color:var(--ink-2)}
+.spacing-row .lab{width:118px;flex:0 0 auto}
+.spacing-row .bar{height:12px;background:var(--brand);border-radius:3px;opacity:.72}
+.comp-box{border:1px solid var(--line);border-radius:8px;padding:14px;background:#fff}
+.comp-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+
+/* 自适应：窄屏收起部分顶部信息，保证不横向溢出 */
+@media (max-width:1380px){
+  .gsearch .ds-input{width:150px}
+  .quick select{max-width:160px}
+}
+@media (max-width:1280px){
+  .ds-src .src-txt{display:none}
+  .gsearch .ds-input{width:130px}
+  .stat-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+</style>
+</head>
+<body>
+
+<!-- ═══════════ 内联 SVG 图标精灵（不引用任何外部资源） ═══════════ -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-chat" viewBox="0 0 24 24"><path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 9.8 9.8 0 0 1-3.3-.6L3 21l1.7-4.6A8.2 8.2 0 0 1 3.6 11.5a8.4 8.4 0 0 1 9-8.4 8.4 8.4 0 0 1 8.4 8.4z"/></symbol>
+  <symbol id="i-chart" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M7 15l3-3 3 3 5-6"/></symbol>
+  <symbol id="i-history" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></symbol>
+  <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></symbol>
+  <symbol id="i-db" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></symbol>
+  <symbol id="i-doc" viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6z"/><path d="M15 3v5h4"/></symbol>
+  <symbol id="i-code" viewBox="0 0 24 24"><path d="M8 7l-5 5 5 5"/><path d="M16 7l5 5-5 5"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24"><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M8.2 10.8l7.6-3.6M8.2 13.2l7.6 3.6"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8.5 12.5l2.5 2.5 4.5-5"/></symbol>
+  <symbol id="i-gauge" viewBox="0 0 24 24"><path d="M4 18a8 8 0 1 1 16 0"/><path d="M12 14l4-4"/></symbol>
+  <symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.5"/></symbol>
+  <symbol id="i-message" viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4V5z"/></symbol>
+  <symbol id="i-flask" viewBox="0 0 24 24"><path d="M9 3h6"/><path d="M10 3v5l-5 9h14l-5-9V3"/><path d="M7 21h10"/></symbol>
+  <symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.2"/><path d="M3 20a6 6 0 0 1 12 0"/><path d="M16 5.5a3 3 0 0 1 0 5.8M17 20a6 6 0 0 0-2-4.5"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3l8 4v5c0 5-3.4 8.2-8 9-4.6-.8-8-4-8-9V7z"/><path d="M9.5 12l2 2 3.5-3.5"/></symbol>
+  <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/><circle cx="9" cy="7" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="8" cy="17" r="2"/></symbol>
+  <symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 3v6M15 3v6"/><path d="M6 9h12v3a6 6 0 0 1-12 0z"/><path d="M12 18v3"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 9a6 6 0 1 1 12 0c0 5 2 6 2 6H4s2-1 2-6z"/><path d="M10 20a2 2 0 0 0 4 0"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></symbol>
+  <symbol id="i-star" viewBox="0 0 24 24"><path d="M12 3l2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12M7 11l5 5 5-5"/><path d="M4 20h16"/></symbol>
+  <symbol id="i-thumb" viewBox="0 0 24 24"><path d="M7 10v10H4V10z"/><path d="M7 10l4-7 2 1-1 5h6a2 2 0 0 1 2 2l-1.5 7a2 2 0 0 1-2 1.5H7"/></symbol>
+  <symbol id="i-inbox" viewBox="0 0 24 24"><path d="M4 5h16l2 9v5H2v-5z"/><path d="M2 14h6l1.5 2h5L16 14h6"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 8h.01"/></symbol>
+  <symbol id="i-layers" viewBox="0 0 24 24"><path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/><path d="M3 17l9 5 9-5"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><path d="M3 11l18-8-8 18-2-8z"/><path d="M11 13l10-10"/></symbol>
+</svg>
+
+<!-- ═══════════ 应用外壳 ═══════════ -->
+<div class="app">
+
+  <!-- ── 左侧固定导航 232px：品牌区 + 四个一级分组 + 底部身份区 ── -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-logo">知</div>
+      <div class="brand-txt"><b>知数AI</b><span>企业 AI 数据知识工作台</span></div>
+    </div>
+    <div class="side-nav" id="sideNav"><!-- 由 renderNav() 按四大分组生成，逐项标注 现有 / 规划中 --></div>
+    <div class="side-foot">
+      <div class="me">
+        <div class="me-avatar" id="meAvatar">管</div>
+        <div class="me-info"><b>评审账号</b><span id="meRole">管理员 · 设计演示</span></div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ── 主区 ── -->
+  <div class="main">
+
+    <!-- 顶部工具栏 56px：面包屑与页面标题 / 全局搜索入口 / 数据源信息 / 待办角标 / 视图切换 / 用户头像 -->
+    <div class="topbar">
+      <div class="tb-crumb" id="tbCrumb">知数AI <span class="tb-sep">/</span> AI 工作台 <span class="tb-sep">/</span> <span class="cur">智能取数</span></div>
+      <div class="tb-right">
+        <!-- 评审入口：页面快速切换 -->
+        <div class="quick" title="页面快速切换入口（便于评审）">
+          <label for="quickSwitch">评审</label>
+          <select id="quickSwitch" onchange="onQuickSwitch(this.value)"></select>
+        </div>
+        <!-- 全局搜索入口：仅展示入口，不虚构检索功能 -->
+        <div class="gsearch">
+          <svg class="ico gs-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><use href="#i-search"/></svg>
+          <input class="ds-input" placeholder="搜索表 / 指标 / 知识" onfocus="showToast('全局搜索为架构预留，此处仅展示入口示意')" readonly>
+        </div>
+        <!-- 数据源信息（配置标签，非统计数值） -->
+        <div class="ds-src" title="数据源为设计演示标注，非真实连接状态">
+          <i class="dot"></i><span class="src-txt">数据源 · demo_shop（示例）</span>
+        </div>
+        <!-- 待办角标（示例角标，非真实统计） -->
+        <button class="icon-btn" title="待办角标 · 设计演示" onclick="showToast('待办角标为界面示例，不代表真实待办数量')">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-bell"/></svg>
+          <span class="badge">3</span>
+        </button>
+        <!-- 管理员 / 普通员工 视图切换（纯前端演示） -->
+        <div class="viewswitch" title="视图切换：普通员工隐藏所有管理员项">
+          <button id="vwAdmin" class="on" onclick="setView('admin')">管理员</button>
+          <button id="vwStaff" onclick="setView('staff')">普通员工</button>
+        </div>
+        <div class="avatar" id="avatarTxt" title="当前视图">管</div>
+      </div>
+    </div>
+
+    <!-- 中央工作区：9 个页面由 hash / JS 切换 -->
+    <div class="work">
+      <div id="pages" style="display:flex;flex-direction:column;flex:1;min-height:0">
+        <!-- ══════════════════════════════════════════════════════════
+             P1 · AI 智能取数工作台【现有功能 · 最重要页面】
+             三栏：最近提问（现有·历史记录）/ 中央对话区 / 数据依据（新增设计）
+             ══════════════════════════════════════════════════════════ -->
+        <section class="page" id="page-ask">
+          <div class="page-head">
+            <div class="page-head-txt">
+              <div class="ph-crumb">首页 <span>/</span> AI 工作台 <span>/</span> <span class="cur">智能取数</span></div>
+              <h1>AI 智能取数工作台</h1>
+              <p>用自然语言提问，系统按真实执行链路检索知识、生成并校验 SQL、执行查询并返回可追溯的结果。</p>
+            </div>
+            <div class="legend-slot"></div>
+          </div>
+
+          <div class="page-body page-body--fill">
+            <div class="ask-grid" id="askGrid">
+
+              <!-- ── 左栏：最近提问（现有功能：历史记录 / 收藏取数） ── -->
+              <aside class="ask-left">
+                <div class="al-head">
+                  <button class="ds-btn ds-btn-primary" onclick="setAskState('init');showToast('设计演示：新建问题，回到初始态')">
+                    <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><use href="#i-plus"/></svg>＋ 新建问题
+                  </button>
+                </div>
+                <div class="aux" style="padding:12px 12px 4px">最近提问 <span class="demo-note">示例</span></div>
+                <div class="al-list" id="askHistory">
+                  <button class="al-item on" onclick="setAskState('result')"><div class="q">按月份统计各区域的发单量与完单量</div><div class="m"><span class="ds-tag t-ok">已完成</span> 示例记录</div></button>
+                  <button class="al-item" onclick="setAskState('result')"><div class="q">上个月各应用主体的接单率排名</div><div class="m"><span class="ds-tag t-ok">已完成</span> 示例记录</div></button>
+                  <button class="al-item" onclick="setAskState('result')"><div class="q">对比今年与去年同期的完单量</div><div class="m"><span class="ds-tag t-info">待审核</span> 示例记录</div></button>
+                  <button class="al-item" onclick="setAskState('result')"><div class="q">列出状态为已完成的订单明细</div><div class="m"><span class="ds-tag t-err">失败</span> 示例记录</div></button>
+                  <button class="al-item" onclick="setAskState('result')"><div class="q">各区域完单量 Top 5 是哪些</div><div class="m"><span class="ds-tag t-ok">已完成</span> 示例记录</div></button>
+                </div>
+                <div style="flex:0 0 auto;border-top:1px solid var(--line);padding:10px 12px;font-size:11px;color:#A6B0BF;line-height:1.6">
+                  现有功能：历史记录 / 收藏取数<br>条目均为设计演示，不代表真实提问
+                </div>
+              </aside>
+
+              <!-- ── 中栏：对话区（初始态 / 结果态） ── -->
+              <section class="ask-center">
+                <div class="ask-toolbar">
+                  <span class="seg-label">演示状态</span>
+                  <div class="seg" id="askStateSeg">
+                    <button data-s="init" class="on" onclick="setAskState('init')">初始态</button>
+                    <button data-s="result" onclick="setAskState('result')">结果态</button>
+                  </div>
+                  <span class="aux">现状仅有一条输入框 placeholder；示例问题卡 / 执行时间线 / 数据依据为新增设计</span>
+                </div>
+
+                <div class="ask-scroll">
+
+                  <!-- 初始态：欢迎语 + 4 条示例业务问题卡（明确标注「新增设计」）+ 大输入框 + 主按钮 -->
+                  <div id="askInit">
+                    <div class="welcome">
+                      <div class="w-ico"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-chat"/></svg></div>
+                      <h2>你好，我是知数AI</h2>
+                      <p>用一句业务问题提问，我会检索企业知识、生成 SQL 并返回可追溯的结果。</p>
+                    </div>
+
+                    <!-- ★ 新增设计：现状只有一条输入框 placeholder，无示例问题引导 -->
+                    <div class="ex-grid">
+                      <button class="ex-card" onclick="setAskState('result');showToast('设计演示：加载结果态')">
+                        <div class="ex-top"><span class="ds-tag t-new">新增设计</span><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" style="color:#C4CDD9"><use href="#i-chev"/></svg></div>
+                        <div class="ex-q">按月份统计各区域的发单量与完单量</div>
+                        <div class="ex-hint">时间 · 维度 · 多指标</div>
+                      </button>
+                      <button class="ex-card" onclick="setAskState('result');showToast('设计演示：加载结果态')">
+                        <div class="ex-top"><span class="ds-tag t-new">新增设计</span><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" style="color:#C4CDD9"><use href="#i-chev"/></svg></div>
+                        <div class="ex-q">上个月完单率是多少？Top 5 区域分别是哪些</div>
+                        <div class="ex-hint">指标 · 排序 · 时间</div>
+                      </button>
+                      <button class="ex-card" onclick="setAskState('result');showToast('设计演示：加载结果态')">
+                        <div class="ex-top"><span class="ds-tag t-new">新增设计</span><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" style="color:#C4CDD9"><use href="#i-chev"/></svg></div>
+                        <div class="ex-q">对比今年与去年同期各应用主体的接单量</div>
+                        <div class="ex-hint">同比 · 对比 · 实体</div>
+                      </button>
+                      <button class="ex-card" onclick="setAskState('result');showToast('设计演示：加载结果态')">
+                        <div class="ex-top"><span class="ds-tag t-new">新增设计</span><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" style="color:#C4CDD9"><use href="#i-chev"/></svg></div>
+                        <div class="ex-q">列出状态为「已完成」的订单明细及所属区域</div>
+                        <div class="ex-hint">明细 · 过滤</div>
+                      </button>
+                    </div>
+
+                    <div class="demo-banner" style="margin-bottom:14px">
+                      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><use href="#i-info"/></svg>
+                      <span><strong>现状说明：</strong>现有产品仅提供一个输入框 placeholder；上方 4 条示例业务问题引导卡片为<strong>新增设计</strong>，用于降低提问门槛。</span>
+                    </div>
+
+                    <div class="composer">
+                      <textarea placeholder="用自然语言描述你要取的数，例如：按月份统计各区域的发单量和完单量…"></textarea>
+                      <div class="composer-foot">
+                        <span class="hint">设计演示：输入与按钮不调用任何后端 API</span>
+                        <button class="ds-btn ds-btn-primary ds-btn-lg" onclick="setAskState('result');showToast('设计演示：切换至结果态')">
+                          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-send"/></svg>开始取数
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- 结果态：AI 回答 + 执行时间线 + 结果表格 + 信息卡 -->
+                  <div id="askResult" style="display:none">
+                    <div class="msg user">
+                      <div class="msg-avatar">我</div>
+                      <div class="msg-content"><div class="msg-bubble">按月份统计各区域的发单量与完单量</div></div>
+                    </div>
+
+                    <div class="msg ai">
+                      <div class="msg-avatar">知</div>
+                      <div class="msg-content">
+
+                        <div class="demo-banner">
+                          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><use href="#i-info"/></svg>
+                          <span>以下为<strong>示例数据 · 仅用于设计演示</strong>，不代表真实经营统计；表格数值均为占位示意，需接入真实数据后展示。</span>
+                        </div>
+
+                        <!-- 执行过程可视化时间线：只允许系统真实执行的 8 步，不展示模型思维链 -->
+                        <div class="ds-card ds-card-pad block">
+                          <div class="card-title">
+                            执行过程
+                            <span class="demo-note">系统真实执行步骤</span>
+                            <span style="margin-left:auto" class="seg-label">状态演示</span>
+                            <div class="seg" id="tlSeg">
+                              <button data-m="success" class="on" onclick="setTimeline('success')">全部成功</button>
+                              <button data-m="running" onclick="setTimeline('running')">执行中</button>
+                              <button data-m="failed" onclick="setTimeline('failed')">校验失败</button>
+                            </div>
+                          </div>
+                          <div class="timeline" id="tlSteps"></div>
+                          <div class="demo-line" style="margin:14px 0 0">时间线仅展示系统真实执行的 8 个步骤（理解业务问题 → 识别指标/时间/维度 → 检索业务知识 → 匹配表与字段 → 生成 SQL → SQL 校验 → 执行查询 → 返回结果），<strong>不展示模型思维链</strong>；失败态给出原因与下一步建议。</div>
+                        </div>
+
+                        <!-- AI 自然语言回答（现有功能：生成自然语言回答） -->
+                        <div class="ds-card ds-card-pad block">
+                          <div class="card-title">AI 回答 <span class="ds-tag t-new">现有功能 · 生成自然语言回答</span> <span class="demo-note">示例数据</span></div>
+                          <p style="font-size:13px;line-height:1.75">示例结论：按自然月、按区域汇总后，发单量与完单量的分布如结果表所示。<span class="muted">（本段为设计演示占位文本，非真实业务结论；正式回答由「生成自然语言回答」按需产出）</span></p>
+                        </div>
+
+                        <!-- 结果表格（中文表头）+ SQL 默认折叠 + 动作条 + 结果反馈条 -->
+                        <div class="ds-card ds-card-pad block">
+                          <div class="card-title">查询结果 <span class="demo-note">示例数据 · 仅用于设计演示</span></div>
+                          <div class="table-wrap">
+                            <table class="ds-table">
+                              <thead><tr><th>月份（示例）</th><th>区域（示例）</th><th>发单量（示例）</th><th>完单量（示例）</th><th>完单率（示例）</th></tr></thead>
+                              <tbody>
+                                <tr><td>2025-01（示例）</td><td>华东（示例）</td><td>1,000（示例）</td><td>900（示例）</td><td>90.0%（示例）</td></tr>
+                                <tr><td>2025-01（示例）</td><td>华南（示例）</td><td>800（示例）</td><td>700（示例）</td><td>87.5%（示例）</td></tr>
+                                <tr><td>2025-02（示例）</td><td>华东（示例）</td><td>1,200（示例）</td><td>1,050（示例）</td><td>87.5%（示例）</td></tr>
+                                <tr><td>2025-02（示例）</td><td>华南（示例）</td><td>750（示例）</td><td>660（示例）</td><td>88.0%（示例）</td></tr>
+                              </tbody>
+                            </table>
+                          </div>
+
+                          <!-- SQL 默认折叠：「查看 SQL」才展开；深色技术区 -->
+                          <button class="ds-btn ds-btn-sm" style="margin-top:12px" onclick="toggleSql()">
+                            <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><use href="#i-code"/></svg>
+                            <span id="sqlToggleTxt">查看 SQL</span>
+                          </button>
+                          <div class="sql-box" id="sqlBox" style="display:none"><span class="cm">-- 示例 SQL · 仅用于设计演示，非真实业务查询</span>
+<span class="kw">SELECT</span>
+  toYYYYMM(o.create_time)      <span class="kw">AS</span> 月份,
+  r.region_name                <span class="kw">AS</span> 区域,
+  count()                      <span class="kw">AS</span> 发单量,
+  countIf(o.order_status = 5)  <span class="kw">AS</span> 完单量
+<span class="kw">FROM</span> dwd_order <span class="kw">AS</span> o
+<span class="kw">LEFT JOIN</span> dim_region <span class="kw">AS</span> r <span class="kw">ON</span> o.region_id = r.region_id
+<span class="kw">WHERE</span> o.create_time &gt;= <span class="str">'2025-01-01'</span>
+<span class="kw">GROUP BY</span> 月份, 区域
+<span class="kw">ORDER BY</span> 月份, 区域;</div>
+
+                          <div class="action-row">
+                            <button class="ds-btn ds-btn-sm" onclick="showToast('设计演示：复制 SQL 不调用后端')"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-copy"/></svg>复制 SQL</button>
+                            <button class="ds-btn ds-btn-sm" onclick="showToast('设计演示：导出 CSV 不调用后端')"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-download"/></svg>导出 CSV</button>
+                            <button class="ds-btn ds-btn-sm" onclick="showToast('设计演示：导出 Excel 不调用后端')">导出 Excel</button>
+                            <button class="ds-btn ds-btn-sm" onclick="showToast('设计演示：收藏不调用后端')"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-star"/></svg>收藏</button>
+                            <button class="ds-btn ds-btn-sm ds-btn-primary" onclick="showToast('设计演示：提交审核不调用后端')">提交审核</button>
+                            <button class="ds-btn ds-btn-sm" onclick="showToast('设计演示：生成自然语言回答不调用后端')">生成自然语言回答</button>
+                          </div>
+
+                          <div class="feedback-bar">
+                            <span>结果反馈（现有功能）</span>
+                            <span class="demo-note">示例</span>
+                            <button class="ds-btn ds-btn-sm" onclick="showToast('设计演示：反馈不调用后端')"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-thumb"/></svg>有帮助</button>
+                            <button class="ds-btn ds-btn-sm" onclick="showToast('设计演示：反馈不调用后端')">结果有误</button>
+                            <span class="muted aux">把踩过的坑记下来，变成知识库的输入</span>
+                          </div>
+                        </div>
+
+                        <!-- 保留真实存在的信息卡（现有功能） -->
+                        <div class="module-title" style="margin:2px 0 0">过程与可信度信息 <span class="aux" style="font-weight:400">（现有功能 · 全部保留）</span></div>
+                        <div class="info-grid">
+                          <div class="info-card">
+                            <h5>状态链四徽章</h5>
+                            <div class="chain">
+                              <span class="ds-tag t-ok">已生成 SQL</span><span class="arw">›</span>
+                              <span class="ds-tag t-ok">已校验</span><span class="arw">›</span>
+                              <span class="ds-tag t-ok">需求已核</span><span class="arw">›</span>
+                              <span class="ds-tag t-ok">已执行</span>
+                            </div>
+                            <div class="aux" style="margin-top:8px">对应现有状态链：已生成 · 已校验 · 需求已核 · 已执行</div>
+                          </div>
+                          <div class="info-card">
+                            <h5>查询理解 / 语义路由</h5>
+                            <dl class="kv-mini">
+                              <dt>意图</dt><dd>汇总（示例）</dd>
+                              <dt>指标</dt><dd>发单量、完单量（示例）</dd>
+                              <dt>实体</dt><dd>订单（示例）</dd>
+                              <dt>维度</dt><dd>月份、区域（示例）</dd>
+                              <dt>时间</dt><dd>2025 年 1—2 月（示例）</dd>
+                              <dt>过滤</dt><dd>（无）</dd>
+                            </dl>
+                          </div>
+                          <div class="info-card">
+                            <h5>SQL 生成前校验报告</h5>
+                            <div class="chip-row" style="margin-bottom:8px"><span class="ds-tag t-ok">校验通过</span><span class="ds-tag t-off">0 个拦截</span></div>
+                            <div class="aux">P0 系统规则 / P1 指标口径 / P2 Join / P3 Schema / 比率写法，5 维校验均无拦截（示例）。</div>
+                          </div>
+                          <div class="info-card">
+                            <h5>信任条</h5>
+                            <div class="chip-row"><span class="ds-tag t-ok">业务已核</span><span class="ds-tag t-ok">结果体检无疑点</span><span class="ds-tag t-info">待业务审核</span></div>
+                            <div class="aux" style="margin-top:8px">区分「SQL 执行成功」与「业务结果正确」，两者不混算。</div>
+                          </div>
+                        </div>
+
+                        <!-- 需求澄清卡（现有功能：口径有歧义先问清楚） -->
+                        <div class="ds-card ds-card-pad" style="margin-top:12px">
+                          <div class="card-title">需求澄清 <span class="ds-tag t-new">现有功能</span> <span class="aux" style="font-weight:400">口径有歧义时先确认，不擅自替用户选口径</span></div>
+                          <div class="clarify-box">
+                            示例：检测到「发单量」存在多个候选口径，请确认本次要使用的口径（候选为设计演示，不代表真实指标定义）：
+                            <div>
+                              <span class="clarify-opt"><span class="ds-tag t-ok">已审核</span> 全量发单量</span>
+                              <span class="clarify-opt">剔除测试单的发单量</span>
+                              <span class="clarify-opt">仅线上渠道发单量</span>
+                            </div>
+                            <div style="margin-top:10px"><input class="ds-input" placeholder="或直接输入口径 / 时间 / 过滤条件…" style="max-width:360px"></div>
+                          </div>
+                        </div>
+
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 增量修改输入框（现有功能：当前窗口基于上一轮继续改） -->
+                <div class="ask-composer" id="askComposer" style="display:none">
+                  <div class="aux" style="margin-bottom:8px">增量修改 <span class="ds-tag t-new">现有功能</span> <span class="muted">在上一轮结果基础上用自然语言继续调整（设计演示，不调用后端）</span></div>
+                  <div class="inline-modify">
+                    <input class="ds-input" placeholder="例：去掉区域分组，只按月份；或把时间范围改成最近 6 个月…">
+                    <button class="ds-btn ds-btn-primary" onclick="showToast('设计演示：增量修改不调用后端')">发送修改</button>
+                  </div>
+                </div>
+              </section>
+
+              <!-- ── 右栏：可折叠「数据依据」面板（新增设计） ── -->
+              <aside class="ask-right">
+                <div class="ev-full">
+                  <div class="ev-head">
+                    <b>数据依据</b>
+                    <button class="ds-btn ds-btn-ghost ds-btn-sm" onclick="toggleEvidence()" title="折叠面板">收起 ›</button>
+                  </div>
+                  <div class="ev-body">
+                    <div class="demo-banner">
+                      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><use href="#i-info"/></svg>
+                      <span><strong>示例数据 · 仅用于设计演示</strong>。以下依据项用于说明结果可追溯性，不代表真实知识条目。</span>
+                    </div>
+                    <div class="ev-sec">
+                      <h5>本次使用的指标</h5>
+                      <div class="ev-list">
+                        <div class="ev-item"><b>发单量（示例）</b><span>统计周期内创建的订单数</span></div>
+                        <div class="ev-item"><b>完单量（示例）</b><span>状态为已完成的订单数</span></div>
+                      </div>
+                    </div>
+                    <div class="ev-sec">
+                      <h5>相关业务定义</h5>
+                      <div class="ev-list">
+                        <div class="ev-item"><b>发单量口径（示例）</b><span>不含测试订单</span></div>
+                        <div class="ev-item"><b>完单率口径（示例）</b><span>完单量 / 发单量，保留两位小数</span></div>
+                      </div>
+                    </div>
+                    <div class="ev-sec">
+                      <h5>使用的数据表</h5>
+                      <div class="ev-list">
+                        <div class="ev-item"><b>dwd_order（示例）</b><span>订单主表</span></div>
+                        <div class="ev-item"><b>dim_region（示例）</b><span>区域维表</span></div>
+                      </div>
+                    </div>
+                    <div class="ev-sec">
+                      <h5>关键字段</h5>
+                      <div class="ev-list">
+                        <div class="ev-item"><b>create_time</b><span>订单创建时间（示例）</span></div>
+                        <div class="ev-item"><b>order_status</b><span>订单状态（示例）</span></div>
+                        <div class="ev-item"><b>region_id</b><span>区域标识（示例）</span></div>
+                      </div>
+                    </div>
+                    <div class="ev-sec">
+                      <h5>关联知识</h5>
+                      <div class="ev-list">
+                        <div class="ev-item"><b>订单状态字典（示例）</b><span>编码 → 中文含义</span></div>
+                        <div class="ev-item"><b>应用主体字典（示例）</b><span>编码 → 中文含义</span></div>
+                      </div>
+                    </div>
+                    <div class="ev-sec">
+                      <h5>数据来源</h5>
+                      <div class="ev-list">
+                        <div class="ev-item"><b>demo_shop（示例）· ClickHouse</b><span>设计演示标注，非真实连接状态</span></div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div class="ev-rail"><button onclick="toggleEvidence()">展开数据依据</button></div>
+              </aside>
+
+            </div>
+          </div>
+        </section>
+        <!-- ══════════════════════════════════════════════════════════
+             P2 · 知识总览 / 数据知识【现有功能】
+             统计卡 + 四个子页签（表结构信息/指标信息/数据字典/语义注册表）
+             表格列名沿用现有前端真实列；含搜索筛选 / 空状态 / 加载骨架
+             ══════════════════════════════════════════════════════════ -->
+        <section class="page" id="page-knowledge">
+          <div class="page-head">
+            <div class="page-head-txt">
+              <div class="ph-crumb">首页 <span>/</span> 企业知识中心 <span>/</span> <span class="cur">知识总览 / 数据知识</span></div>
+              <h1>知识总览 / 数据知识</h1>
+              <p>沉淀喂给模型的知识资产：表结构、指标口径、数据字典与语义注册表，支持搜索筛选与逐条追溯。</p>
+            </div>
+            <div class="legend-slot"></div>
+          </div>
+
+          <div class="page-body">
+            <!-- 统计卡：聚合数值一律留「—」，不编造任何统计 -->
+            <div class="stat-grid">
+              <div class="stat"><div class="lbl">已纳管数据表</div><div class="num dash">—</div><div class="cap">需接入真实统计口径后展示</div></div>
+              <div class="stat"><div class="lbl">指标定义</div><div class="num dash">—</div><div class="cap">需接入真实统计口径后展示</div></div>
+              <div class="stat"><div class="lbl">数据字典条目</div><div class="num dash">—</div><div class="cap">需接入真实统计口径后展示</div></div>
+              <div class="stat"><div class="lbl">语义注册实体</div><div class="num dash">—</div><div class="cap">需接入真实统计口径后展示</div></div>
+            </div>
+
+            <div class="ds-card ds-card-pad">
+              <!-- 搜索筛选 -->
+              <div class="toolbar-row">
+                <input class="ds-input" placeholder="搜索知识名称 / 表名 / 字段名…" style="max-width:260px">
+                <div class="ds-select-wrap" style="width:140px"><select class="ds-select"><option>全部类型</option><option>表结构</option><option>指标</option><option>字典</option><option>实体</option></select></div>
+                <div class="ds-select-wrap" style="width:130px"><select class="ds-select"><option>全部状态</option><option>已开放</option><option>已停用</option><option>待复核</option></select></div>
+                <button class="ds-btn" onclick="showToast('设计演示：筛选不调用后端')">筛选</button>
+                <button class="ds-btn ds-btn-ghost" onclick="openDrawer()" title="打开知识详情抽屉">查看知识详情抽屉 ›</button>
+                <span class="aux" style="margin-left:auto">现状：知识总览与数据知识为同一知识中心的不同视图</span>
+              </div>
+
+              <!-- 子页签（现有：表结构信息 / 指标信息 / 数据字典 / 语义注册表） -->
+              <div class="ds-tabs" id="kbTabs">
+                <button data-t="struct" class="on" onclick="setKbTab('struct')">表结构信息</button>
+                <button data-t="metric" onclick="setKbTab('metric')">指标信息</button>
+                <button data-t="dict" onclick="setKbTab('dict')">数据字典</button>
+                <button data-t="registry" onclick="setKbTab('registry')">语义注册表</button>
+              </div>
+
+              <!-- 演示控制：有数据 / 空状态 / 加载骨架 -->
+              <div class="toolbar-row" style="margin-bottom:12px">
+                <span class="seg-label">演示状态</span>
+                <div class="seg" id="kbDemoSeg">
+                  <button data-m="data" class="on" onclick="setKbDemo('data')">有数据（示例）</button>
+                  <button data-m="empty" onclick="setKbDemo('empty')">空状态</button>
+                  <button data-m="loading" onclick="setKbDemo('loading')">加载骨架</button>
+                </div>
+                <span class="aux">点击表格「查看」可打开知识详情抽屉</span>
+              </div>
+
+              <div id="kbTableBox"></div>
+            </div>
+          </div>
+        </section>
+        <!-- ══════════════════════════════════════════════════════════
+             P4 · 知识审核【现有功能：待复核 + 取数审核】
+             待审核 / 审核通过 / 审核驳回 三态 + 审核详情
+             ══════════════════════════════════════════════════════════ -->
+        <section class="page" id="page-audit">
+          <div class="page-head">
+            <div class="page-head-txt">
+              <div class="ph-crumb">首页 <span>/</span> 知识治理中心 <span>/</span> <span class="cur">知识审核</span></div>
+              <h1>知识审核</h1>
+              <p>严格模式下 AI 新写入的知识先进入待复核队列，裁决通过后才进入生产检索；同时承载取数结果复核。</p>
+            </div>
+            <div class="legend-slot"></div>
+          </div>
+
+          <div class="page-body">
+            <div class="demo-banner">
+              <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><use href="#i-info"/></svg>
+              <span>现有功能对应：<strong>待复核知识队列 + 取数审核</strong>；下方条目为<strong>示例数据 · 仅用于设计演示</strong>，审核操作不调用后端。</span>
+            </div>
+
+            <div class="ds-tabs" id="auditTabs">
+              <button data-t="pending" class="on" onclick="setAuditTab('pending')">待审核</button>
+              <button data-t="approved" onclick="setAuditTab('approved')">审核通过</button>
+              <button data-t="rejected" onclick="setAuditTab('rejected')">审核驳回</button>
+            </div>
+
+            <div class="audit-grid">
+              <div class="ds-card ds-card-pad">
+                <div class="card-title">审核队列 <span class="demo-note">示例数据</span></div>
+                <div class="audit-list" id="auditList"></div>
+              </div>
+              <div class="ds-card ds-card-pad" id="auditDetail"></div>
+            </div>
+          </div>
+        </section>
+        <!-- ══════════════════════════════════════════════════════════
+             P5 · 知识质量【现有：知识缺口扫描 / 注释覆盖率】
+             五类中仅「缺失知识」可用，其余四类为规划中（灰显 + 标签 + 弹说明）
+             ══════════════════════════════════════════════════════════ -->
+        <section class="page" id="page-quality">
+          <div class="page-head">
+            <div class="page-head-txt">
+              <div class="ph-crumb">首页 <span>/</span> 知识治理中心 <span>/</span> <span class="cur">知识质量</span></div>
+              <h1>知识质量</h1>
+              <p>从知识缺口、注释覆盖率等维度审视知识资产健康度；当前版本仅实现缺口扫描，其余分类为架构预留。</p>
+            </div>
+            <div class="legend-slot"></div>
+          </div>
+
+          <div class="page-body">
+            <div class="stat-grid">
+              <div class="stat"><div class="lbl">注释覆盖率</div><div class="num dash">—</div><div class="cap">现有功能 · 需接入真实统计口径后展示</div></div>
+              <div class="stat"><div class="lbl">完全无注释字段</div><div class="num dash">—</div><div class="cap">现有功能 · 需接入真实统计口径后展示</div></div>
+              <div class="stat"><div class="lbl">待补知识缺口</div><div class="num dash">—</div><div class="cap">现有功能 · 需接入真实统计口径后展示</div></div>
+              <div class="stat"><div class="lbl">已复核注释</div><div class="num dash">—</div><div class="cap">现有功能 · 需接入真实统计口径后展示</div></div>
+            </div>
+
+            <div class="ds-card ds-card-pad">
+              <div class="ds-tabs" id="qualityTabs">
+                <button data-t="missing" class="on" onclick="setQualityTab('missing')">缺失知识 <span class="ds-tag t-ok">现有</span></button>
+                <button data-t="dup" class="is-planned" onclick="setQualityTab('dup')">重复知识 <span class="ds-tag t-plan">规划中</span></button>
+                <button data-t="conflict" class="is-planned" onclick="setQualityTab('conflict')">冲突知识 <span class="ds-tag t-plan">规划中</span></button>
+                <button data-t="expired" class="is-planned" onclick="setQualityTab('expired')">过期知识 <span class="ds-tag t-plan">规划中</span></button>
+                <button data-t="low" class="is-planned" onclick="setQualityTab('low')">低质量知识 <span class="ds-tag t-plan">规划中</span></button>
+              </div>
+
+              <!-- 缺失知识：现有功能「知识缺口扫描」，列名取自 gaps.js -->
+              <div id="qualityExisting">
+                <div class="card-title">知识缺口扫描 <span class="demo-note">示例数据 · 仅用于设计演示</span> <span class="aux" style="font-weight:400">现有能力：按级别 / 表 / 字段 / 实际取值 / 当前注释定位缺口</span></div>
+                <div class="table-wrap">
+                  <table class="ds-table">
+                    <thead><tr><th>级别</th><th>表</th><th>字段</th><th>类型</th><th>实际取值</th><th>当前注释</th><th>操作</th></tr></thead>
+                    <tbody>
+                      <tr><td><span class="ds-tag t-err">高</span></td><td>dwd_order（示例）</td><td>app_entity_source</td><td>枚举（示例）</td><td>101、102（示例）</td><td class="cell-clamp">示例：字段无业务注释，模型只能靠字段名猜测编码含义，建议补充「101=车拖车」等字典映射，此处用于演示长文本自动换行。</td><td class="op-cell"><button class="ds-btn ds-btn-sm" onclick="showToast('设计演示：补注释不调用后端')">补注释</button></td></tr>
+                      <tr><td><span class="ds-tag t-run">中</span></td><td>dwd_dispatch（示例）</td><td>order_status</td><td>枚举（示例）</td><td>5、9（示例）</td><td>示例：仅库自带基础注释，缺业务口径说明。</td><td class="op-cell"><button class="ds-btn ds-btn-sm" onclick="showToast('设计演示：补注释不调用后端')">补注释</button></td></tr>
+                      <tr><td><span class="ds-tag t-info">低</span></td><td>dim_region（示例）</td><td>region_name</td><td>字符串（示例）</td><td>（文本，示例）</td><td>示例：注释过短，建议补充取值范围。</td><td class="op-cell"><button class="ds-btn ds-btn-sm" onclick="showToast('设计演示：补注释不调用后端')">补注释</button></td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <!-- 其余四类：规划中，全部空状态，无任何假数据 -->
+              <div id="qualityReserved" style="display:none">
+                <div class="ds-empty">
+                  <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><use href="#i-layers"/></svg>
+                  <div class="t"><span id="qualityReservedName">该分类</span> · 该能力尚未实现，为架构预留</div>
+                  <div class="s">此分类在信息架构中已预留，当前版本未提供可用功能，也不展示任何检测数据。点击该页签会弹出统一说明。</div>
+                  <span class="ds-tag t-plan">规划中</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+        <!-- ══════════════════════════════════════════════════════════
+             P6 · AI 效果评估（AI 取数质量中心）【现有功能】
+             仅列出真实统计口径的指标名称，数值一律「—」
+             禁止编造任何数字；「查看评测报告」为现有入口
+             ══════════════════════════════════════════════════════════ -->
+        <section class="page" id="page-evaluation">
+          <div class="page-head">
+            <div class="page-head-txt">
+              <div class="ph-crumb">首页 <span>/</span> 知识治理中心 <span>/</span> <span class="cur">AI 效果评估</span></div>
+              <h1>AI 效果评估（AI 取数质量中心）</h1>
+              <p>按离线评测口径列出取数质量指标；统计数值需接入真实口径后展示，本页不提供任何估算或演示数值。</p>
+            </div>
+            <div class="legend-slot"></div>
+          </div>
+
+          <div class="page-body">
+            <div class="demo-banner" style="margin-bottom:14px">
+              <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><use href="#i-info"/></svg>
+              <span><strong>需接入真实统计口径后展示。</strong>下列指标名称均取自现有评测口径（问题理解、表和字段匹配、SQL 生成、SQL 执行、业务结果正确率等），所有数值一律留「—」，<strong>不编造任何数字</strong>，也不以 SQL 执行成功率冒充业务正确率。</span>
+            </div>
+
+            <div class="toolbar-row">
+              <span class="ds-tag t-ok">查看评测报告 · 现有入口</span>
+              <span class="aux">评测报告由离线评测脚本生成，本设计稿不填充报告内容</span>
+              <span class="ds-tag t-plan" style="margin-left:auto">实验与评测 · 规划中</span>
+            </div>
+
+            <div id="evalGroups"></div>
+
+            <div class="demo-line" style="margin-top:4px">指标分组与名称沿用现有 EVAL_METRIC_ZH / 评测看板口径；「—」表示当前设计稿不填充数值，不代表 0 或空。</div>
+          </div>
+        </section>
+        <!-- ══════════════════════════════════════════════════════════
+             P7 · 数据分析工作台【架构预留 · 该能力尚未实现】
+             仅做骨架：顶部指标概览 / 趋势图 / 结构对比 / 明细与 AI 解读
+             全部为空状态，不放置任何假图表、假数字或可用控件
+             ══════════════════════════════════════════════════════════ -->
+        <section class="page" id="page-analysis">
+          <div class="page-head">
+            <div class="page-head-txt">
+              <div class="ph-crumb">首页 <span>/</span> AI 工作台 <span>/</span> <span class="cur">数据分析</span></div>
+              <h1>数据分析工作台 <span class="ds-tag t-plan">规划中</span></h1>
+              <p>为后续自助分析能力预留的信息架构骨架；当前版本尚未实现，页面内不提供任何可用功能与数据。</p>
+            </div>
+            <div class="legend-slot"></div>
+          </div>
+
+          <div class="page-body">
+            <div class="demo-banner" style="margin-bottom:16px">
+              <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><use href="#i-info"/></svg>
+              <span><strong>该能力尚未实现，为架构预留。</strong>以下四个区块仅用于说明未来布局结构，全部保持空状态，不含图表、数值、筛选器或任何可交互控件。</span>
+            </div>
+
+            <div class="reserve-grid">
+              <div class="skel-region">
+                <div class="sr-head">顶部指标概览 <span class="ds-tag t-plan">架构预留</span></div>
+                <div class="ds-empty"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><use href="#i-inbox"/></svg><div class="t">该能力尚未实现，为架构预留</div><div class="s">预留区：指标概览卡片位，当前不渲染任何数值。</div></div>
+              </div>
+              <div class="skel-region">
+                <div class="sr-head">趋势图 <span class="ds-tag t-plan">架构预留</span></div>
+                <div class="ds-empty"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><use href="#i-inbox"/></svg><div class="t">该能力尚未实现，为架构预留</div><div class="s">预留区：趋势可视化位，当前不渲染任何图表。</div></div>
+              </div>
+              <div class="skel-region">
+                <div class="sr-head">结构对比 <span class="ds-tag t-plan">架构预留</span></div>
+                <div class="ds-empty"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><use href="#i-inbox"/></svg><div class="t">该能力尚未实现，为架构预留</div><div class="s">预留区：结构对比可视化位，当前不渲染任何图表。</div></div>
+              </div>
+              <div class="skel-region">
+                <div class="sr-head">明细与 AI 解读 <span class="ds-tag t-plan">架构预留</span></div>
+                <div class="ds-empty"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><use href="#i-inbox"/></svg><div class="t">该能力尚未实现，为架构预留</div><div class="s">预留区：明细表与 AI 解读位，当前不渲染任何内容。</div></div>
+              </div>
+            </div>
+          </div>
+        </section>
+        <!-- ══════════════════════════════════════════════════════════
+             P8 · 账号管理【现有功能：用户管理 / 角色权限】
+             账号表格 + 新增账号表单 + 编辑弹窗
+             用户可见文案统一使用「密码」
+             ══════════════════════════════════════════════════════════ -->
+        <section class="page" id="page-accounts">
+          <div class="page-head">
+            <div class="page-head-txt">
+              <div class="ph-crumb">首页 <span>/</span> 系统管理 <span>/</span> <span class="cur">账号管理</span></div>
+              <h1>账号管理</h1>
+              <p>管理登录账号、角色与启用状态；角色权限（表与权限 / 数据权限）为现有能力，同属系统管理域。</p>
+            </div>
+            <div class="legend-slot"></div>
+          </div>
+
+          <div class="page-body">
+            <div class="demo-banner" style="margin-bottom:16px">
+              <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><use href="#i-info"/></svg>
+              <span>表格与表单数据为<strong>示例数据 · 仅用于设计演示</strong>；新增、编辑、停用等操作不调用后端。</span>
+            </div>
+
+            <!-- 账号表格：列名取自现有 admin.js -->
+            <div class="ds-card ds-card-pad block">
+              <div class="card-title">账号列表 <span class="demo-note">示例数据</span></div>
+              <div class="table-wrap">
+                <table class="ds-table">
+                  <thead><tr><th>登录名</th><th>显示名</th><th>角色</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead>
+                  <tbody>
+                    <tr><td>admin（示例）</td><td>系统管理员（示例）</td><td>管理员</td><td><span class="ds-tag t-ok">启用</span></td><td>— <span class="muted aux">示例</span></td><td class="op-cell"><button class="ds-btn ds-btn-sm" onclick="openEdit('admin（示例）','系统管理员（示例）')">编辑</button> <button class="ds-btn ds-btn-sm ds-btn-danger" onclick="showToast('设计演示：停用不调用后端')">停用</button></td></tr>
+                    <tr><td>analyst01（示例）</td><td>数据分析员甲（示例）</td><td>普通员工</td><td><span class="ds-tag t-ok">启用</span></td><td>— <span class="muted aux">示例</span></td><td class="op-cell"><button class="ds-btn ds-btn-sm" onclick="openEdit('analyst01（示例）','数据分析员甲（示例）')">编辑</button> <button class="ds-btn ds-btn-sm ds-btn-danger" onclick="showToast('设计演示：停用不调用后端')">停用</button></td></tr>
+                    <tr><td>analyst02（示例）</td><td>数据分析员乙（示例）</td><td>普通员工</td><td><span class="ds-tag t-off">已停用</span></td><td>— <span class="muted aux">示例</span></td><td class="op-cell"><button class="ds-btn ds-btn-sm" onclick="openEdit('analyst02（示例）','数据分析员乙（示例）')">编辑</button> <button class="ds-btn ds-btn-sm" onclick="showToast('设计演示：启用不调用后端')">启用</button></td></tr>
+                    <tr><td>auditor（示例）</td><td>知识审核员（示例）</td><td>管理员</td><td><span class="ds-tag t-ok">启用</span></td><td>— <span class="muted aux">示例</span></td><td class="op-cell"><button class="ds-btn ds-btn-sm" onclick="openEdit('auditor（示例）','知识审核员（示例）')">编辑</button> <button class="ds-btn ds-btn-sm ds-btn-danger" onclick="showToast('设计演示：停用不调用后端')">停用</button></td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- 新增账号表单 -->
+            <div class="ds-card ds-card-pad">
+              <div class="card-title">新增账号 <span class="demo-note">示例表单</span></div>
+              <div class="form-grid">
+                <div class="field"><label>登录名 <span class="req">*</span></label><input class="ds-input" placeholder="请输入登录名"></div>
+                <div class="field"><label>显示名 <span class="req">*</span></label><input class="ds-input" placeholder="请输入显示名"></div>
+                <div class="field"><label>角色</label><div class="ds-select-wrap"><select class="ds-select"><option>普通员工</option><option>管理员</option></select></div></div>
+                <div class="field"><label>状态</label><div class="ds-select-wrap"><select class="ds-select"><option>启用</option><option>停用</option></select></div></div>
+                <div class="field"><label>密码 <span class="req">*</span></label><input class="ds-input" type="password" placeholder="请输入密码"></div>
+                <div class="field"><label>确认密码 <span class="req">*</span></label><input class="ds-input" type="password" placeholder="请再次输入密码"></div>
+              </div>
+              <div class="btn-row" style="margin-top:4px">
+                <button class="ds-btn ds-btn-primary" onclick="showToast('设计演示：新增账号不调用后端')">创建账号</button>
+                <button class="ds-btn" onclick="showToast('设计演示：重置表单不调用后端')">重置</button>
+                <span class="aux">密码为必填项，创建后可再次编辑修改</span>
+              </div>
+            </div>
+          </div>
+        </section>
+        <!-- ══════════════════════════════════════════════════════════
+             P9 · Design System 展示页
+             颜色变量 / 字阶 / 间距 / 圆角 / 控件高 / 按钮 / 输入框 / 下拉 /
+             表格 / 状态标签 / 卡片 / 抽屉 / 弹窗 / 空状态 / 加载骨架
+             全部由统一 CSS token 渲染
+             ══════════════════════════════════════════════════════════ -->
+        <section class="page" id="page-ds">
+          <div class="page-head">
+            <div class="page-head-txt">
+              <div class="ph-crumb">首页 <span>/</span> 设计系统 <span>/</span> <span class="cur">Design System</span></div>
+              <h1>Design System 展示</h1>
+              <p>全部组件由同一套 CSS token 渲染；统一组件类：ds-btn / ds-input / ds-table / ds-tag / ds-card / ds-drawer / ds-empty / ds-skeleton。</p>
+            </div>
+            <div class="legend-slot"></div>
+          </div>
+
+          <div class="page-body">
+
+            <!-- 颜色变量 -->
+            <div class="ds-sec">
+              <h3>颜色变量</h3>
+              <div class="swatches">
+                <div class="swatch"><div class="chip" style="background:#3478F6"></div><div class="meta"><b>品牌主色</b><span>#3478F6</span></div></div>
+                <div class="swatch"><div class="chip" style="background:#F5F7FA"></div><div class="meta"><b>页面背景</b><span>#F5F7FA</span></div></div>
+                <div class="swatch"><div class="chip" style="background:#FFFFFF;border-bottom:1px solid #E7EBF0"></div><div class="meta"><b>卡片背景</b><span>#FFFFFF</span></div></div>
+                <div class="swatch"><div class="chip" style="background:#17243A"></div><div class="meta"><b>主文字</b><span>#17243A</span></div></div>
+                <div class="swatch"><div class="chip" style="background:#667085"></div><div class="meta"><b>次级文字</b><span>#667085</span></div></div>
+                <div class="swatch"><div class="chip" style="background:#16A36A"></div><div class="meta"><b>成功</b><span>#16A36A</span></div></div>
+                <div class="swatch"><div class="chip" style="background:#E9A23B"></div><div class="meta"><b>警告</b><span>#E9A23B</span></div></div>
+                <div class="swatch"><div class="chip" style="background:#DC5252"></div><div class="meta"><b>错误</b><span>#DC5252</span></div></div>
+                <div class="swatch"><div class="chip" style="background:#E7EBF0"></div><div class="meta"><b>分割线</b><span>#E7EBF0</span></div></div>
+                <div class="swatch"><div class="chip" style="background:#1B2434"></div><div class="meta"><b>SQL 代码块底</b><span>#1B2434</span></div></div>
+              </div>
+            </div>
+
+            <!-- 字阶 -->
+            <div class="ds-sec">
+              <h3>字阶</h3>
+              <div class="comp-box">
+                <div class="scale-row"><span class="lab">页面标题 20px</span><span style="font-size:20px;font-weight:650">知数AI 数据知识工作台</span></div>
+                <div class="scale-row"><span class="lab">模块标题 16px</span><span style="font-size:16px;font-weight:650">知识总览</span></div>
+                <div class="scale-row"><span class="lab">卡片标题 14px</span><span style="font-size:14px;font-weight:650">查询结果</span></div>
+                <div class="scale-row"><span class="lab">正文 13-14px</span><span style="font-size:13px">用自然语言提问，自动检索表结构并生成 SQL。</span></div>
+                <div class="scale-row" style="border-bottom:0"><span class="lab">辅助 12px</span><span style="font-size:12px;color:#667085">示例数据 · 仅用于设计演示</span></div>
+              </div>
+            </div>
+
+            <!-- 间距 / 圆角 / 控件高 -->
+            <div class="ds-sec">
+              <h3>间距 / 圆角 / 控件高</h3>
+              <div class="comp-box">
+                <div class="spacing-row"><span class="lab">间距 4px</span><i class="bar" style="width:4px"></i><span>4px</span></div>
+                <div class="spacing-row"><span class="lab">间距 8px</span><i class="bar" style="width:8px"></i><span>8px</span></div>
+                <div class="spacing-row"><span class="lab">间距 12px</span><i class="bar" style="width:12px"></i><span>12px</span></div>
+                <div class="spacing-row"><span class="lab">间距 16px</span><i class="bar" style="width:16px"></i><span>16px</span></div>
+                <div class="spacing-row"><span class="lab">间距 24px</span><i class="bar" style="width:24px"></i><span>24px</span></div>
+                <div class="spacing-row"><span class="lab">间距 32px</span><i class="bar" style="width:32px"></i><span>32px</span></div>
+                <div class="comp-row" style="margin-top:12px;padding-top:12px;border-top:1px dashed #E7EBF0">
+                  <span class="lab aux" style="width:118px">圆角 6 / 8 / 10px</span>
+                  <span style="display:inline-block;width:52px;height:32px;background:#EAF1FE;border:1px solid #CFE0FB;border-radius:6px"></span>
+                  <span style="display:inline-block;width:52px;height:32px;background:#EAF1FE;border:1px solid #CFE0FB;border-radius:8px"></span>
+                  <span style="display:inline-block;width:52px;height:32px;background:#EAF1FE;border:1px solid #CFE0FB;border-radius:10px"></span>
+                  <span class="aux" style="margin-left:12px">控件高 32px / 40px</span>
+                  <span class="ds-btn" style="height:32px">32px</span><span class="ds-btn ds-btn-lg" style="height:40px">40px</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 按钮 -->
+            <div class="ds-sec">
+              <h3>按钮</h3>
+              <div class="comp-box comp-row">
+                <button class="ds-btn ds-btn-primary">主按钮</button>
+                <button class="ds-btn">次按钮</button>
+                <button class="ds-btn ds-btn-danger">危险按钮</button>
+                <button class="ds-btn ds-btn-ghost">幽灵按钮</button>
+                <button class="ds-btn ds-btn-lg">大尺寸 40px</button>
+                <button class="ds-btn ds-btn-sm">小尺寸 28px</button>
+                <button class="ds-btn" disabled>禁用态</button>
+              </div>
+            </div>
+
+            <!-- 输入框 / 下拉 / 文本域 -->
+            <div class="ds-sec">
+              <h3>输入框 / 下拉</h3>
+              <div class="comp-box">
+                <div class="form-grid">
+                  <div class="field"><label>输入框（32px）</label><input class="ds-input" placeholder="请输入内容"></div>
+                  <div class="field"><label>输入框（40px）</label><input class="ds-input ds-input-lg" placeholder="请输入内容"></div>
+                  <div class="field"><label>下拉选择</label><div class="ds-select-wrap"><select class="ds-select"><option>选项一</option><option>选项二</option><option>选项三</option></select></div></div>
+                  <div class="field"><label>禁用输入框</label><input class="ds-input" value="不可编辑" disabled></div>
+                </div>
+                <div class="field" style="margin-bottom:0"><label>文本域</label><textarea class="ds-textarea" placeholder="多行文本输入…"></textarea></div>
+              </div>
+            </div>
+
+            <!-- 表格 -->
+            <div class="ds-sec">
+              <h3>表格（支持长文本换行）</h3>
+              <div class="table-wrap">
+                <table class="ds-table">
+                  <thead><tr><th>名称</th><th>类型</th><th>说明</th><th>状态</th></tr></thead>
+                  <tbody>
+                    <tr><td>示例条目 A</td><td>指标定义</td><td class="cell-clamp">此处为一段较长的说明文本，用于演示表格在列宽不足时自动换行，避免横向溢出并保持内容可读，行高维持 1.5-1.7。</td><td><span class="ds-tag t-ok">成功</span></td></tr>
+                    <tr><td>示例条目 B</td><td>数据字典</td><td>编码到中文含义的映射说明。</td><td><span class="ds-tag t-info">待处理</span></td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- 状态标签 -->
+            <div class="ds-sec">
+              <h3>状态标签</h3>
+              <div class="comp-box comp-row">
+                <span class="ds-tag t-info">待处理</span>
+                <span class="ds-tag t-run">执行中</span>
+                <span class="ds-tag t-ok">成功</span>
+                <span class="ds-tag t-err">失败</span>
+                <span class="ds-tag t-off">已停用</span>
+                <span class="ds-tag t-plan" style="margin-left:12px">规划中</span>
+                <span class="ds-tag t-reserve">预留</span>
+                <span class="ds-tag t-demo">示例数据</span>
+                <span class="ds-tag t-new">新增设计</span>
+              </div>
+            </div>
+
+            <!-- 卡片 / 抽屉 / 弹窗 / 空状态 / 骨架 -->
+            <div class="ds-sec">
+              <h3>卡片 / 抽屉 / 弹窗 / 空状态 / 加载骨架</h3>
+              <div class="reserve-grid">
+                <div class="ds-card ds-card-pad">
+                  <div class="card-title">卡片 .ds-card</div>
+                  <p class="aux" style="line-height:1.7">白底、1px 分割线边框、8px 圆角、16px 内边距。不使用彩色卡片堆叠，也不使用大面积渐变。</p>
+                  <div class="btn-row" style="margin-top:12px">
+                    <button class="ds-btn ds-btn-sm" onclick="openDrawer()">打开抽屉 .ds-drawer</button>
+                    <button class="ds-btn ds-btn-sm" onclick="onPlannedClick('示例弹窗')">打开弹窗 .ds-modal</button>
+                  </div>
+                </div>
+                <div class="ds-card" style="overflow:hidden">
+                  <div class="card-title" style="padding:12px 14px 0;margin-bottom:8px">空状态 .ds-empty</div>
+                  <div class="ds-empty" style="min-height:96px;padding:14px">
+                    <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><use href="#i-inbox"/></svg>
+                    <div class="t">暂无数据</div><div class="s">当前筛选条件下没有匹配内容。</div>
+                  </div>
+                </div>
+                <div class="ds-card ds-card-pad" style="grid-column:1 / -1">
+                  <div class="card-title">加载骨架 .ds-skeleton</div>
+                  <div class="ds-skeleton sk-line" style="width:100%"></div>
+                  <div class="ds-skeleton sk-line" style="width:88%"></div>
+                  <div class="ds-skeleton sk-line" style="width:94%"></div>
+                  <div class="ds-skeleton" style="width:64%;height:12px"></div>
+                  <div class="aux" style="margin-top:10px">灰色脉冲占位，无彩色渐变；用于表格 / 列表加载态。</div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ 全局覆盖层：遮罩 / 知识详情抽屉 / 弹窗 / Toast ═══════════ -->
+<div class="ds-overlay" id="overlay" onclick="closeAll()"></div>
+
+<!-- 知识详情抽屉（P3）：字段部分标注「预留」 -->
+<aside class="ds-drawer" id="drawer">
+  <div class="drawer-head">
+    <h3>知识详情</h3>
+    <button class="ds-btn ds-btn-ghost ds-btn-sm" onclick="closeAll()" aria-label="关闭">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><use href="#i-close"/></svg>
+    </button>
+  </div>
+  <div class="drawer-body">
+    <div class="demo-banner">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><use href="#i-info"/></svg>
+      <span>以下为<strong>示例数据 · 仅用于设计演示</strong>。标注「预留」的字段为架构预留，现有系统尚未产出该信息。</span>
+    </div>
+    <dl class="kv">
+      <dt>知识名称</dt><dd>示例 · 订单完成量口径</dd>
+      <dt>类型</dt><dd><span class="ds-tag t-info">指标定义</span></dd>
+      <dt>内容定义</dt><dd>示例：统计周期内状态为「已完成」的订单数量，按自然月汇总；不含测试订单与已取消订单。</dd>
+      <dt>来源</dt><dd>人工录入（业务口径文档）<span class="sub">示例值</span></dd>
+      <dt>关联表与字段</dt><dd>dwd_order（示例）· order_status、create_time<span class="sub">示例值，用于演示长文本换行</span></dd>
+      <dt>关联指标与实体</dt><dd>发单量、完单量（示例）· 订单实体（示例）</dd>
+      <dt>审核状态</dt><dd><span class="ds-tag t-ok">审核通过</span></dd>
+      <dt>知识等级</dt><dd><span class="ds-tag t-reserve">预留</span> <span class="muted aux">字段为架构预留，现有系统不产出等级</span></dd>
+      <dt>创建时间</dt><dd>— <span class="muted aux">需接入真实数据后展示</span></dd>
+      <dt>更新时间</dt><dd>— <span class="muted aux">需接入真实数据后展示</span></dd>
+      <dt>使用情况</dt><dd><span class="ds-tag t-reserve">预留</span> <span class="muted aux">被引用次数 / 命中率等为架构预留，现有系统不统计</span></dd>
+    </dl>
+  </div>
+  <div class="drawer-foot">
+    <button class="ds-btn" onclick="closeAll()">关闭</button>
+    <button class="ds-btn ds-btn-primary" onclick="showToast('设计演示：抽屉内操作不调用后端')">定位到来源</button>
+  </div>
+</aside>
+
+<!-- 规划中说明弹窗：点击任何「规划中」项均弹出此说明 -->
+<div class="ds-modal" id="plannedModal">
+  <div class="modal-head">
+    <span>架构预留说明</span>
+    <button class="ds-btn ds-btn-ghost ds-btn-sm" onclick="closeAll()" aria-label="关闭">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><use href="#i-close"/></svg>
+    </button>
+  </div>
+  <div class="modal-body">
+    <p style="font-size:15px;font-weight:650;color:var(--ink);margin-bottom:10px">该能力尚未实现，仅为架构预留</p>
+    <p class="muted" style="font-size:13px">「<span id="plannedName" style="color:var(--ink);font-weight:600">该能力</span>」在信息架构中已预留位置，但当前版本尚未实现，因此不提供可用功能、不展示任何业务数据。</p>
+    <div class="demo-banner" style="margin-top:14px">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><use href="#i-info"/></svg>
+      <span>本设计稿的原则：绝不把未实现的能力画成可用功能，也不以假数据冒充真实统计。</span>
+    </div>
+  </div>
+  <div class="modal-foot"><button class="ds-btn ds-btn-primary" onclick="closeAll()">我知道了</button></div>
+</div>
+
+<!-- 编辑账号弹窗（P8）：用户可见文案统一用「密码」 -->
+<div class="ds-modal" id="editModal">
+  <div class="modal-head">
+    <span>编辑账号</span>
+    <button class="ds-btn ds-btn-ghost ds-btn-sm" onclick="closeAll()" aria-label="关闭">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><use href="#i-close"/></svg>
+    </button>
+  </div>
+  <div class="modal-body">
+    <div class="field"><label>登录名</label><input class="ds-input" id="editLogin" value="" readonly style="background:#F7F9FC;color:var(--ink-2)"></div>
+    <div class="field"><label>显示名</label><input class="ds-input" id="editName" value=""></div>
+    <div class="field"><label>角色</label>
+      <div class="ds-select-wrap"><select class="ds-select"><option>管理员</option><option selected>普通员工</option></select></div>
+    </div>
+    <div class="field"><label>密码</label><input class="ds-input" type="password" placeholder="留空表示不修改密码"></div>
+    <div class="field" style="margin-bottom:0"><label>状态</label>
+      <div class="ds-select-wrap"><select class="ds-select"><option selected>启用</option><option>停用</option></select></div>
+    </div>
+  </div>
+  <div class="modal-foot">
+    <button class="ds-btn" onclick="closeAll()">取消</button>
+    <button class="ds-btn ds-btn-primary" onclick="closeAll();showToast('设计演示：保存操作不调用后端')">保存</button>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     内联 JS：仅做前端演示（页面切换 / SQL 展开 / 抽屉开关 /
+     角色视图切换 / 时间线状态切换 / 子页签 / 空状态与骨架切换）
+     不调用任何后端 API
+     ═══════════════════════════════════════════════════════════════ -->
+<script>
+/* ── 页面清单：9 个必须设计的页面；顶部「评审」快速切换入口由此生成 ── */
+const PAGE_LIST = [
+  {id:'ask',        name:'AI 智能取数工作台',          group:'AI 工作台'},
+  {id:'knowledge',  name:'知识总览 / 数据知识',         group:'企业知识中心'},
+  {id:'drawer',     name:'知识详情抽屉',                group:'企业知识中心'},
+  {id:'audit',      name:'知识审核',                    group:'知识治理中心'},
+  {id:'quality',    name:'知识质量',                    group:'知识治理中心'},
+  {id:'evaluation', name:'AI 效果评估（取数质量中心）', group:'知识治理中心'},
+  {id:'analysis',   name:'数据分析工作台（架构预留）',  group:'AI 工作台'},
+  {id:'accounts',   name:'账号管理',                    group:'系统管理'},
+  {id:'ds',         name:'Design System 展示',          group:'设计系统'}
+];
+/* 管理员页面：普通员工视图下隐藏 */
+const ADMIN_PAGES = ['audit','quality','evaluation','accounts'];
+const PAGE_META = {}; PAGE_LIST.forEach(p => PAGE_META[p.id] = p);
+
+/* ── 左侧导航：四大分组，逐项标注「现有 / 规划中」──
+   status: existing=现有 / planned=规划中 / partial=部分规划中
+   admin:true 或所在分组 admin:true → 普通员工视图隐藏
+   target: 对应本设计稿中的页面 id
+   note : 现有功能在设计稿中的归属说明（点击时以 toast 提示，避免误读为新造功能） */
+const NAV = [
+  {group:'AI 工作台', items:[
+    {name:'智能取数', icon:'chat',    status:'existing', target:'ask'},
+    {name:'数据分析', icon:'chart',   status:'planned'},
+    {name:'历史记录', icon:'history', status:'existing', target:'ask',
+     note:'「历史记录」为现有功能，对应智能取数工作台左侧「最近提问」面板与取数审核'}
+  ]},
+  {group:'企业知识中心', items:[
+    {name:'知识总览', icon:'grid',  status:'existing', target:'knowledge'},
+    {name:'数据知识', icon:'db',    status:'existing', target:'knowledge',
+     note:'「数据知识」为现有功能，对应本页的表结构信息 / 指标信息 / 数据字典 / 语义注册表'},
+    {name:'业务知识', icon:'doc',   status:'partial', children:[
+      {name:'业务文档', icon:'doc',     status:'existing', target:'knowledge', note:'业务文档为现有能力，本设计稿归入知识中心呈现'},
+      {name:'业务规则', icon:'sliders', status:'planned'}
+    ]},
+    {name:'SQL 知识', icon:'code', status:'existing', target:'knowledge',
+     note:'SQL 知识（SQL经验 / 标准问题库）为现有能力，本设计稿归入知识中心呈现'},
+    {name:'语义关系', icon:'link', status:'existing', target:'knowledge',
+     note:'语义关系为现有能力，对应语义注册表的实体与 Join 基数'},
+    {name:'知识检索测试', icon:'search', status:'planned'}
+  ]},
+  {group:'知识治理中心', admin:true, items:[
+    {name:'知识审核', icon:'check',   status:'existing', target:'audit'},
+    {name:'知识质量', icon:'gauge',   status:'existing', target:'quality'},
+    {name:'AI 效果评估', icon:'target', status:'existing', target:'evaluation'},
+    {name:'用户反馈', icon:'message', status:'existing', target:'audit',
+     note:'反馈处理为现有能力，本设计稿在知识审核页呈现审核闭环'},
+    {name:'实验与评测', icon:'flask', status:'planned', children:[
+      {name:'查看评测报告', icon:'doc', status:'existing', target:'evaluation',
+       note:'「查看评测报告」为现有入口，报告由离线评测脚本生成；本设计稿不填充报告数值'}
+    ]}
+  ]},
+  {group:'系统管理', admin:true, items:[
+    {name:'用户管理', icon:'users',   status:'existing', target:'accounts'},
+    {name:'角色权限', icon:'shield',  status:'existing', target:'accounts',
+     note:'角色权限（表与权限 / 数据权限）为现有能力，本设计稿在系统管理页呈现'},
+    {name:'模型配置', icon:'sliders', status:'planned'},
+    {name:'数据源配置', icon:'plug',  status:'planned'},
+    {name:'系统设置', icon:'sliders', status:'planned'}
+  ]}
+];
+
+/* 汇总「现有功能归属说明」，供点击导航时提示 */
+const NAV_NOTES = {};
+(function walk(list){ list.forEach(it=>{ if(it.note) NAV_NOTES[it.name]=it.note; if(it.children) walk(it.children); }); })(NAV.flatMap(g=>g.items));
+
+let CURRENT_VIEW = 'admin';   // admin | staff
+let CURRENT_PAGE = 'ask';
+
+/* ── 小工具 ── */
+function esc(s){return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function ico(n,cls){return '<svg class="ico '+(cls||'')+'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-'+n+'"/></svg>';}
+function showToast(msg){
+  const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show');
+  clearTimeout(showToast._t); showToast._t=setTimeout(()=>t.classList.remove('show'),2800);
+}
+
+/* ── 导航渲染 ── */
+function statusTag(s){
+  if(s==='planned') return '<span class="nav-status ns-planned">规划中</span>';
+  if(s==='partial') return '<span class="nav-status ns-partial">部分规划中</span>';
+  return '<span class="nav-status ns-existing">现有</span>';
+}
+function isAdminItem(it,g){
+  if(it.admin || g.admin) return true;
+  if(it.children) return it.children.every(c=>isAdminItem(c,g));
+  return false;
+}
+function renderNavItem(it,g){
+  if(it.children){
+    const planned=it.status==='planned';
+    /* 规划中父项：灰显 + 「规划中」标签 + 点击弹出统一说明 */
+    const act=planned?' class="nav-parent nav-parent--planned" onclick="onPlannedClick(\''+esc(it.name)+'\')" title="'+esc(it.name)+'（规划中）"'
+                     :' class="nav-parent" title="'+esc(it.name)+'（部分规划中）"';
+    let h='<div'+act+'>'+ico(it.icon)+'<span class="nm">'+esc(it.name)+'</span>'+statusTag(it.status)+'</div>';
+    h+='<div class="nav-children">';
+    it.children.forEach(c=>{ h+=renderNavItem(c,g); });
+    h+='</div>';
+    return h;
+  }
+  const planned = it.status==='planned';
+  const cls=['nav-item',planned?'nav-item--planned':'',(it.target&&CURRENT_PAGE===it.target)?'active':''].filter(Boolean).join(' ');
+  /* 规划中项：灰显 + 「规划中」标签 + 点击弹出「该能力尚未实现，仅为架构预留」 */
+  const act = planned
+    ? 'onclick="onPlannedClick(\''+esc(it.name)+'\')"'
+    : 'onclick="onNavClick(\''+(it.target||'')+'\',\''+esc(it.name)+'\')" data-target="'+(it.target||'')+'"';
+  return '<button class="'+cls+'" '+act+' title="'+esc(it.name)+(planned?'（规划中）':'')+'">'
+       + ico(it.icon) + '<span class="nm">'+esc(it.name)+'</span>' + statusTag(it.status) + '</button>';
+}
+function renderNav(){
+  let html='';
+  NAV.forEach(g=>{
+    const items=g.items.filter(it=>CURRENT_VIEW==='admin'||!isAdminItem(it,g));
+    if(!items.length) return;
+    html+='<div class="nav-group"><div class="nav-group-label"><span>'+esc(g.group)+'</span>'
+        + (g.admin?'<span class="admin-flag">管理员</span>':'') + '</div>';
+    items.forEach(it=>{ html+=renderNavItem(it,g); });
+    html+='</div>';
+  });
+  document.getElementById('sideNav').innerHTML=html;
+}
+function onPlannedClick(name){ document.getElementById('plannedName').textContent=name||'该能力'; openModal('plannedModal'); }
+function onNavClick(target,name){
+  if(!target){ showToast('该入口为架构预留'); return; }
+  switchPage(target);
+  if(NAV_NOTES[name]) showToast(NAV_NOTES[name]);
+}
+
+/* ── 每页右上角图例（现有功能 / 架构预留）统一注入 ── */
+function renderLegends(){
+  const html='<div class="legend">'
+    +'<div class="lg-title">图例说明</div>'
+    +'<div class="lg-row">'
+      +'<span class="lg-item"><i class="sw" style="background:var(--brand)"></i>现有功能</span>'
+      +'<span class="lg-item"><i class="sw" style="background:#C4CDD9"></i>架构预留</span>'
+    +'</div>'
+    +'<div class="lg-note">蓝色标记为系统已实现能力；灰色标记仅为架构规划，尚未实现、不提供可用功能与数据。</div>'
+  +'</div>';
+  document.querySelectorAll('.legend-slot').forEach(el=>el.innerHTML=html);
+}
+
+/* ── 快速切换 / 页面切换 ── */
+function renderQuickSwitch(){
+  const qs=document.getElementById('quickSwitch');
+  qs.innerHTML=PAGE_LIST
+    .filter(p=>CURRENT_VIEW==='admin'||ADMIN_PAGES.indexOf(p.id)<0)
+    .map(p=>'<option value="'+p.id+'">'+esc(p.name)+'</option>').join('');
+}
+function onQuickSwitch(v){
+  if(v==='drawer'){ openDrawer(); document.getElementById('quickSwitch').value=CURRENT_PAGE; return; }
+  switchPage(v);
+}
+function switchPage(id){
+  if(id==='drawer'){ openDrawer(); id='ask'; }   /* 抽屉不是独立页面：打开抽屉并落到取数页 */
+  if(!PAGE_META[id]) id='ask';
+  if(CURRENT_VIEW==='staff' && ADMIN_PAGES.indexOf(id)>=0){ id='ask'; showToast('普通员工视图下不展示管理员页面'); }
+  CURRENT_PAGE=id;
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  const el=document.getElementById('page-'+id);
+  if(el) el.classList.add('active');
+  const meta=PAGE_META[id];
+  document.getElementById('tbCrumb').innerHTML='知数AI <span class="tb-sep">/</span> '+esc(meta.group)
+    +' <span class="tb-sep">/</span> <span class="cur">'+esc(meta.name)+'</span>';
+  const qs=document.getElementById('quickSwitch'); if(qs && qs.value!==id) qs.value=id;
+  /* 只高亮第一个匹配的导航项，避免多个「现有」入口同时高亮 */
+  let matched=false;
+  document.querySelectorAll('.nav-item').forEach(b=>{
+    const on=!matched && !!b.dataset.target && b.dataset.target===id;
+    b.classList.toggle('active',on); if(on) matched=true;
+  });
+  const body=el&&el.querySelector('.page-body'); if(body) body.scrollTop=0;
+  /* file:// 直接打开时 replaceState 可能受限，失败则忽略，不影响演示 */
+  try{ if(location.hash!=='#'+id) history.replaceState(null,'','#'+id); }catch(e){}
+}
+
+/* ── 角色视图切换：普通员工隐藏所有管理员项 ── */
+function setView(v){
+  CURRENT_VIEW=v;
+  document.getElementById('vwAdmin').classList.toggle('on',v==='admin');
+  document.getElementById('vwStaff').classList.toggle('on',v==='staff');
+  document.getElementById('meRole').textContent=(v==='admin'?'管理员':'普通员工')+' · 设计演示';
+  document.getElementById('meAvatar').textContent=v==='admin'?'管':'员';
+  document.getElementById('avatarTxt').textContent=v==='admin'?'管':'员';
+  renderNav(); renderQuickSwitch();
+  if(v==='staff'&&ADMIN_PAGES.indexOf(CURRENT_PAGE)>=0) switchPage('ask');
+  else switchPage(CURRENT_PAGE);
+  showToast(v==='admin'?'已切换为管理员视图':'已切换为普通员工视图：管理员项已隐藏');
+}
+
+/* ── 遮罩 / 抽屉 / 弹窗 ── */
+function showOverlay(){ document.getElementById('overlay').classList.add('show'); }
+function hideOverlay(){ document.getElementById('overlay').classList.remove('show'); }
+function openDrawer(){ showOverlay(); document.getElementById('drawer').classList.add('show'); }
+function openModal(id){ showOverlay(); document.querySelectorAll('.ds-modal').forEach(m=>m.classList.remove('show')); document.getElementById(id).classList.add('show'); }
+function closeAll(){
+  document.querySelectorAll('.ds-modal').forEach(m=>m.classList.remove('show'));
+  document.getElementById('drawer').classList.remove('show');
+  hideOverlay();
+}
+document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeAll(); });
+
+/* ═══════════════════════════════════════════════════════════════
+   P1 · AI 智能取数工作台交互（纯前端演示）
+   ═══════════════════════════════════════════════════════════════ */
+/* 初始态 / 结果态 切换 —— 现状只有一条输入框，结果态为完整设计 */
+function setAskState(s){
+  document.getElementById('askInit').style.display   = s==='init'?'':'none';
+  document.getElementById('askResult').style.display = s==='result'?'':'none';
+  document.getElementById('askComposer').style.display = s==='result'?'':'none';
+  document.querySelectorAll('#askStateSeg button').forEach(b=>b.classList.toggle('on',b.dataset.s===s));
+}
+/* 执行过程时间线：只允许系统真实执行的 8 步；不展示模型思维链 */
+const TL_STEPS=['理解业务问题','识别指标·时间范围·分析维度','检索相关业务知识','匹配数据表与字段','生成 SQL','SQL 校验','执行查询','返回分析结果'];
+function setTimeline(mode){
+  let states,failIdx=-1;
+  if(mode==='success')      states=['ok','ok','ok','ok','ok','ok','ok','ok'];
+  else if(mode==='running') states=['ok','ok','ok','run','wait','wait','wait','wait'];
+  else { states=['ok','ok','ok','ok','ok','err','wait','wait']; failIdx=5; }
+  const lab={ok:'成功',run:'执行中',wait:'等待中',err:'失败'};
+  const tagCls={ok:'t-ok',run:'t-run',wait:'t-off',err:'t-err'};
+  const desc={ok:'已完成',run:'系统正在执行该步骤…',wait:'尚未开始'};
+  document.getElementById('tlSteps').innerHTML=TL_STEPS.map((n,i)=>{
+    const st=states[i];
+    const dot=st==='ok'?'✓':st==='err'?'!':st==='run'?'•':'';
+    let fail='';
+    if(i===failIdx) fail='<div class="tl-fail"><b>失败原因（示例）：</b>校验规则「P3 Schema · 列存在性」未通过 —— 生成的 SQL 引用了知识库中不存在的字段。<br><b>下一步建议：</b>在数据知识页补充该字段注释，或调整问题措辞后重新发起取数。<span class="muted">（演示说明，非真实错误，不含模型思维链）</span></div>';
+    return '<div class="tl-step '+st+'"><div class="tl-rail"></div>'
+      +'<div class="tl-dot">'+dot+'</div>'
+      +'<div class="tl-body"><div class="tl-name">'+n+' <span class="ds-tag '+tagCls[st]+'">'+lab[st]+'</span></div>'
+      +'<div class="tl-desc">'+desc[st]+'</div>'+fail+'</div></div>';
+  }).join('');
+  document.querySelectorAll('#tlSeg button').forEach(b=>b.classList.toggle('on',b.dataset.m===mode));
+}
+/* SQL 默认折叠，点「查看 SQL」才展开 */
+function toggleSql(){
+  const box=document.getElementById('sqlBox');
+  const willOpen=box.style.display==='none';
+  box.style.display=willOpen?'block':'none';
+  document.getElementById('sqlToggleTxt').textContent=willOpen?'收起 SQL':'查看 SQL';
+}
+/* 右侧「数据依据」面板折叠 */
+function toggleEvidence(){ document.getElementById('askGrid').classList.toggle('collapsed'); }
+
+/* ═══════════════════════════════════════════════════════════════
+   P2 · 知识总览 / 数据知识：子页签 + 真实列名 + 空状态 / 加载骨架
+   列名取自现有前端（admin.js / registry.js / metrics.js / dict.js）
+   ═══════════════════════════════════════════════════════════════ */
+const KB_TABS={
+  struct:{name:'表结构信息',cols:['表名','业务注释','AI 可见','备注','操作'],rows:[
+    ['dwd_order（示例）','示例：订单主表，记录每一笔订单的状态、时间与归属主体；业务注释用于注入给大模型理解表用途，此处为演示长文本换行效果。','是','示例条目','查看'],
+    ['dwd_dispatch（示例）','示例：派单明细表，含接单、完单时间与应用主体标识。','是','示例条目','查看'],
+    ['dim_region（示例）','示例：区域维表，用于按区域维度汇总。','否','示例条目','查看']
+  ]},
+  metric:{name:'指标信息',cols:['指标名','业务口径','关联表','单位','状态','操作'],rows:[
+    ['发单量（示例）','示例：统计周期内创建的订单数，不含测试单。','dwd_order','单','已开放','查看'],
+    ['完单量（示例）','示例：统计周期内状态为已完成的订单数。','dwd_order','单','已开放','查看'],
+    ['接单率（示例）','示例：接单量 / 发单量，比率保留两位小数。','dwd_dispatch','%','已停用','查看']
+  ]},
+  dict:{name:'数据字典',cols:['字典名称','编码','中文含义','状态','操作'],rows:[
+    ['应用主体（示例）','101','示例：车拖车','已启用','查看'],
+    ['应用主体（示例）','102','示例：货运平台','已启用','查看'],
+    ['订单状态（示例）','9','示例：已取消','已停用','查看']
+  ]},
+  registry:{name:'语义注册表',cols:['实体','类型','关联表','Join 基数','状态','操作'],rows:[
+    ['订单实体（示例）','业务实体','dwd_order','1 : N','已开放','查看'],
+    ['应用主体实体（示例）','业务实体','dim_app_subject','N : 1','已开放','查看'],
+    ['区域实体（示例）','维度实体','dim_region','1 : N','待复核','查看']
+  ]}
+};
+let KB_TAB='struct', KB_DEMO='data';
+function setKbTab(t){ KB_TAB=t; document.querySelectorAll('#kbTabs button').forEach(b=>b.classList.toggle('on',b.dataset.t===t)); renderKbTable(); }
+function setKbDemo(m){ KB_DEMO=m; document.querySelectorAll('#kbDemoSeg button').forEach(b=>b.classList.toggle('on',b.dataset.m===m)); renderKbTable(); }
+function renderKbTable(){
+  const cfg=KB_TABS[KB_TAB], box=document.getElementById('kbTableBox');
+  if(KB_DEMO==='empty'){
+    box.innerHTML='<div class="ds-empty">'+ico('inbox')+'<div class="t">暂无数据</div><div class="s">当前筛选条件下没有匹配的知识条目。可调整搜索词或筛选条件后重试。</div></div>';
+    return;
+  }
+  if(KB_DEMO==='loading'){
+    box.innerHTML='<div style="padding:16px">'
+      +[100,86,94,78,90,70].map(w=>'<div class="ds-skeleton sk-line" style="width:'+w+'%"></div>').join('')
+      +'<div class="aux" style="margin-top:8px">加载中…（加载骨架示例）</div></div>';
+    return;
+  }
+  const head='<thead><tr>'+cfg.cols.map(c=>'<th>'+esc(c)+'</th>').join('')+'</tr></thead>';
+  const body='<tbody>'+cfg.rows.map(r=>'<tr>'+r.map((c,i)=>{
+    const isOp=(i===r.length-1);
+    if(isOp) return '<td class="op-cell"><button class="ds-btn ds-btn-sm" onclick="openDrawer()">'+esc(c)+'</button></td>';
+    return '<td'+(i===1?' class="cell-clamp"':'')+'>'+esc(c)+'</td>';
+  }).join('')+'</tr>').join('')+'</tbody>';
+  box.innerHTML='<div class="demo-line"><span class="demo-note">示例数据 · 仅用于设计演示</span>　表格列名沿用现有前端真实列名；长文本支持自动换行。</div>'
+    +'<div class="table-wrap"><table class="ds-table">'+head+body+'</table></div>';
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   P4 · 知识审核：待审核 / 审核通过 / 审核驳回 三态 + 审核详情
+   ═══════════════════════════════════════════════════════════════ */
+const AUDIT={
+  pending:[
+    {n:'示例 · 完单率口径补充',t:'指标定义',s:'AI 生成',d:'示例：完单率 = 完单量 / 发单量，比率口径补充说明。',time:'—'},
+    {n:'示例 · dim_region 表注释',t:'表注释',s:'人工录入',d:'示例：区域维表，用于按区域汇总订单指标。',time:'—'},
+    {n:'示例 · 取数结果复核申请',t:'取数审核',s:'用户提交',d:'示例：申请复核某次取数的指标口径与过滤条件。',time:'—'}
+  ],
+  approved:[
+    {n:'示例 · 发单量口径',t:'指标定义',s:'人工录入',d:'示例：统计周期内创建的订单数。',time:'—'},
+    {n:'示例 · 应用主体字典',t:'数据字典',s:'人工录入',d:'示例：101=车拖车 等编码映射。',time:'—'}
+  ],
+  rejected:[
+    {n:'示例 · 重复指标定义',t:'指标定义',s:'AI 生成',d:'示例：与现有「发单量」口径重复，驳回。',time:'—'}
+  ]
+};
+let AUDIT_TAB='pending';
+function setAuditTab(t){
+  AUDIT_TAB=t;
+  document.querySelectorAll('#auditTabs button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
+  const box=document.getElementById('auditList');
+  box.innerHTML=AUDIT[t].map((it,i)=>'<button class="audit-item'+(i===0?' on':'')+'" onclick="pickAudit('+i+',this)">'
+    +'<div class="t"><span>'+esc(it.n)+'</span><span class="ds-tag '+(t==='pending'?'t-info':t==='approved'?'t-ok':'t-err')+'">'
+    +(t==='pending'?'待审核':t==='approved'?'已通过':'已驳回')+'</span></div>'
+    +'<div class="s">类型：'+esc(it.t)+'　来源：'+esc(it.s)+'</div></button>').join('');
+  pickAudit(0,null);
+}
+function pickAudit(i,btn){
+  if(btn){ document.querySelectorAll('#auditList .audit-item').forEach(b=>b.classList.remove('on')); btn.classList.add('on'); }
+  const it=AUDIT[AUDIT_TAB][i];
+  document.getElementById('auditDetail').innerHTML=
+    '<div class="card-title">审核详情 <span class="demo-note">示例数据 · 仅用于设计演示</span></div>'
+    +'<dl class="kv" style="margin-bottom:16px">'
+      +'<dt>知识名称</dt><dd>'+esc(it.n)+'</dd>'
+      +'<dt>类型</dt><dd>'+esc(it.t)+'</dd>'
+      +'<dt>提交来源</dt><dd>'+esc(it.s)+'</dd>'
+      +'<dt>提交时间</dt><dd>— <span class="muted aux">需接入真实数据后展示</span></dd>'
+      +'<dt>内容预览</dt><dd>'+esc(it.d)+'</dd>'
+      +'<dt>校验结果</dt><dd><span class="ds-tag t-ok">格式校验通过</span> <span class="ds-tag t-run">待人工确认口径</span></dd>'
+    +'</dl>'
+    +'<div class="btn-row"><button class="ds-btn ds-btn-primary" onclick="showToast(\'设计演示：审核操作不调用后端\')">通过</button>'
+    +'<button class="ds-btn ds-btn-danger" onclick="showToast(\'设计演示：审核操作不调用后端\')">驳回</button>'
+    +'<button class="ds-btn" onclick="openDrawer()">查看知识详情</button></div>';
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   P5 · 知识质量：仅「缺失知识（知识缺口扫描）」为现有，其余规划中
+   ═══════════════════════════════════════════════════════════════ */
+function setQualityTab(t){
+  document.querySelectorAll('#qualityTabs button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
+  const existing=(t==='missing');
+  document.getElementById('qualityExisting').style.display=existing?'':'none';
+  document.getElementById('qualityReserved').style.display=existing?'none':'';
+  if(!existing){
+    const n={dup:'重复知识',conflict:'冲突知识',expired:'过期知识',low:'低质量知识'}[t];
+    document.getElementById('qualityReservedName').textContent=n;
+    onPlannedClick(n);   /* 规划中：弹出「该能力尚未实现，仅为架构预留」 */
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   P6 · AI 效果评估（AI 取数质量中心）
+   指标名称取自现有真实统计口径（server.py EVAL_METRIC_ZH / golden.js）
+   数值一律「—」，禁止编造任何数字
+   ═══════════════════════════════════════════════════════════════ */
+const EVAL_GROUPS=[
+  {g:'核心准确率',items:[['综合准确率','全部用例在各评测维度上的整体正确率'],['意图识别准确率','正确识别用户查询意图的用例占比'],['指标识别准确率','正确识别所需业务指标、未遗漏未多算的用例占比'],['SQL正确率','生成的 SQL 在语义上符合预期的用例占比'],['时间识别准确率','正确识别时间范围与时间口径的用例占比']]},
+  {g:'检索与知识依据',items:[['数据表召回率','正确召回所需数据表的用例占比'],['字段召回率','正确召回所需字段的用例占比'],['知识依据准确率','SQL 引用的表/字段均有知识依据的用例占比'],['幻觉率','出现表/字段/口径幻觉的用例占比（越低越好）']]},
+  {g:'执行与结果',items:[['SQL执行成功率','生成的 SQL 能成功执行的用例占比'],['结果准确率','执行结果与预期结果一致的用例占比'],['业务结果准确率','人工审核通过数 / 取数总次数（≠ SQL 执行成功率）'],['拒答准确率','该拒答时正确拒答、不该拒答时不误拒的准确率'],['一致性','相同输入重复运行结果一致的比例']]},
+  {g:'性能开销',items:[['P50 延迟','50% 用例的响应耗时（秒）'],['P95 延迟','95% 用例的响应耗时（秒）'],['平均延迟','平均响应耗时（秒）'],['平均 Token','平均每次调用消耗的 token 数'],['平均成本','平均每次调用成本']]}
+];
+function renderEvaluation(){
+  document.getElementById('evalGroups').innerHTML=EVAL_GROUPS.map(gr=>
+    '<div class="eval-group"><h4>'+esc(gr.g)+'</h4><div class="eval-grid">'
+    +gr.items.map(it=>'<div class="eval-item"><div class="n">'+esc(it[0])+'</div><div class="v">—</div><div class="c">口径：'+esc(it[1])+'</div></div>').join('')
+    +'</div></div>').join('');
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   P8 · 账号管理：编辑弹窗（用户可见文案统一用「密码」）
+   ═══════════════════════════════════════════════════════════════ */
+function openEdit(login,name){
+  document.getElementById('editLogin').value=login;
+  document.getElementById('editName').value=name;
+  openModal('editModal');
+}
+
+/* ── 初始化 ── */
+(function init(){
+  renderNav();
+  renderQuickSwitch();
+  renderLegends();
+  renderKbTable();
+  setAuditTab('pending');
+  setTimeline('success');   /* 时间线默认展示「全部成功」 */
+  setAskState('init');      /* 智能取数默认展示初始态，SQL 默认折叠 */
+  renderEvaluation();
+  const h=(location.hash||'#ask').slice(1);
+  switchPage(PAGE_META[h]?h:'ask');
+})();
+window.addEventListener('hashchange',()=>{ const h=location.hash.slice(1); if(PAGE_META[h]&&h!==CURRENT_PAGE) switchPage(h); });
+</script>
+</body>
+</html>

@@ -1,0 +1,35 @@
+/* ══════════════════════════════════════════════════════════════
+   experience.css · SQL 经验中心页专用样式（.xp-*）
+   由 index.html 内联样式按行拆分而来，规则逐字节未改动。
+   ══════════════════════════════════════════════════════════════ */
+      .xp-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+      .xp-stat { background: var(--color-bg-card); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 12px 14px; }
+      .xp-stat b { display: block; font-size: var(--font-number-md); line-height: 28px; color: var(--color-text-primary); font-variant-numeric: tabular-nums; }
+      .xp-stat span { font-size: 12px; color: var(--color-text-muted); }
+      .xp-stat.warn b { color: var(--color-danger); }
+      .xp-stat.ok b { color: var(--color-success); }
+      .xp-card { border-left: 3px solid var(--color-border); }
+      .xp-card.golden { border-left-color: var(--color-success); }
+      .xp-card.cand { border-left-color: var(--color-warning); }
+      .xp-card.fail { border-left-color: var(--color-danger); }
+      .xp-q { font-weight: 600; color: var(--color-text-primary); }
+      .xp-sql { background: var(--color-bg-hover); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 10px 12px;
+                font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.55;
+                white-space: pre-wrap; word-break: break-all; max-height: 190px; overflow: auto; margin: 8px 0; color: var(--color-text-secondary); }
+      .xp-meta { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: 6px 0; }
+      .xp-acts { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+      .xp-acts button { padding: 6px 12px; font-size: 12.5px; }
+      .xp-mask { position: fixed; inset: 0; background: rgba(29,33,41,.45); display: flex;
+                 align-items: flex-start; justify-content: center; z-index: 1000; overflow: auto; padding: 40px 12px; }
+      .xp-mask.hidden { display: none; }
+      .xp-modal { background: var(--color-bg-card); width: 900px; max-width: 96vw; border-radius: var(--radius-lg); padding: 22px 24px;
+                  box-shadow: var(--shadow-float); }
+      .xp-modal h3 { margin: 0 0 6px; font-size: 15px; }
+      .xp-kv { display: grid; grid-template-columns: 96px 1fr; gap: 6px 10px; font-size: 13px; margin: 10px 0; }
+      .xp-kv .k { color: var(--color-text-muted); }
+      .xp-form { display: grid; gap: 8px; margin-top: 10px; }
+      .xp-form textarea, .xp-form input, .xp-form select {
+        width: 100%; padding: 8px 10px; font-size: 13px; border: 1px solid var(--color-border); border-radius: 6px; }
+      .xp-form textarea { min-height: 64px; font-family: inherit; }
+      .xp-sec { margin-top: 16px; padding-top: 12px; border-top: 1px dashed var(--color-border); }
+      .xp-sec h4 { margin: 0 0 8px; font-size: 13.5px; color: var(--color-text-primary); }

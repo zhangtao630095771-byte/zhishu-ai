@@ -263,33 +263,6 @@ def test_C_pipeline():
         for (m, n), v in _patch.items():
             setattr(m, n, v)
 
-    # ── C16：Legacy 路径同样执行字段级权限校验（不得绕过）──
-    import rag, llm, prompt as _prompt, guard as _guard
-    _patch2 = {}
-    def _set2(m, n, v):
-        _patch2[(m, n)] = getattr(m, n); setattr(m, n, v)
-    _set2(rag, "retrieve", lambda idx, q: (["ods_tu_customer_all"], [], "r", None))
-    _set2(rag, "retrieve_dicts", lambda idx, q: ([], "无字典"))
-    _set2(rag, "match_disabled_metric", lambda idx, q: None)
-    _set2(_prompt, "build_system_prompt", lambda *a, **k: "sys")
-    _set2(llm, "chat", lambda sp, u: "SELECT id, phone FROM ods_tu_customer_all")
-    _set2(_guard, "sql_guard", lambda s: (True, ""))
-    _set2(_guard, "check_tables_ex", lambda s, a, strict=None: {
-        "ok": True, "illegal": [], "status": "parsed", "method": "stub", "reason": "", "message": ""})
-    _set2(permission, "evaluate", lambda sql, u, m, policies=None, sensitive=None, action=1: {
-        "allowed": False, "deny_reasons": ["字段 phone 命中 DENY，已拒绝访问"], "mask_map": {},
-        "denied_columns": ["phone"], "output_columns": [], "requested_tables": [], "parsed": True})
-    try:
-        _idx = {"tables": [{"name": "ods_tu_customer_all", "column_list": ["id", "phone"]}],
-                "metrics": [], "dicts": [],
-                "allowed_tables": ["ods_tu_customer_all"]}
-        _r = agent.ask_legacy(_idx, "查询客户手机号", user=USER)
-        check_true("C16 Legacy 路径字段级 DENY 被拦截",
-                   (not _r["ok"]) and "字段级权限拦截" in (_r.get("error") or ""),
-                   str(_r.get("error")))
-    finally:
-        for (m, n), v in _patch2.items(): setattr(m, n, v)
-
     # ── C19：行级改写后必须重新校验，执行 SQL == 校验 SQL ──
     try:
         config_store.create_user(USER["username"], "zs123456", role="user")

@@ -33,11 +33,16 @@ def _default_acl_visible(app_env):
 # 大模型配置
 # ═══════════════════════════════════════════════════════════
 LLM_API_KEY = os.getenv("DEEPSEEK_API_KEY")   # 钥匙：从环境变量取，绝不写死在代码里
-LLM_BASE_URL = "https://api.deepseek.com/v1"  # 服务器地址：决定请求发到哪家
-LLM_MODEL = "deepseek-chat"                   # 模型名
+LLM_BASE_URL = "https://api.deepseek.com"  # 服务器地址：决定请求发到哪家
+LLM_MODEL = "deepseek-flash"                   # 模型名
 LLM_TEMPERATURE = 0.0                         # 温度：取数场景必须为 0
 #   温度 0   = 每次回答几乎一样（取数必选，同一问题必须得到同一 SQL）
 #   温度 0.8 = 更有创意但每次不同（写文案用）
+
+# ── SQL 生成 / 自愈修复调用的超时（秒）──
+#   ★ 之前 SQL 生成那一次 llm.chat 不设 timeout，模型卡住会无限阻塞
+#     （OpenAI SDK 默认超时长达 600s，实际不可接受）；现在生成与各处自愈修复统一用它。
+LLM_GENERATE_TIMEOUT = int(os.getenv("LLM_GENERATE_TIMEOUT", "60"))
 
 
 # ═══════════════════════════════════════════════════════════
@@ -73,6 +78,21 @@ MAX_QUERY_MEMORY = int(os.getenv("MAX_QUERY_MEMORY", "12000000000")) # 约 11.2 
 #   （这种查询单条常需 30~90s）。仍是上限保护，不会无限拖。
 MAX_QUERY_TIMEOUT = int(os.getenv("MAX_QUERY_TIMEOUT", "120"))
 
+# ── 连接复用（★ 性能关键：不要关）──
+#   实测（2026-10-30，本地 SSH 隧道）：新建连接 8.3 秒，复用连接查询 0.05 秒。
+#   一次取数里 execute 阶段原来 5.8 秒，其中 SQL 本身只占 0.08 秒 ——
+#   也就是说 **99% 的时间花在建连接上**。
+#   开启复用后：每线程保持一条长连接，只有首次请求付连接成本。
+#   ★ 断线（隧道重建）会自动重连并重试一次，见 db_clickhouse._run。
+CK_CONN_REUSE = _env_bool("CK_CONN_REUSE", True)
+#   连接空闲超过这个秒数就丢弃重建（防止拿到被中间设备掐死但对象还活着的连接）
+CK_CONN_MAX_AGE = int(os.getenv("CK_CONN_MAX_AGE", "600"))
+
+# ── 尾段并行（自然语言回答 ∥ 事后自审）──
+#   这两步互不依赖，串行实测 1.9s + 5.0s；并行后取较大者，省掉约 1.9s。
+#   ★ 返回结构完全不变，前端无需改动。置 0 可退回串行（排障用）。
+TAIL_PARALLEL = _env_bool("TAIL_PARALLEL", True)
+
 # ── 数据字典源表（★ 库里的"编码→中文"字典表）──
 #   这张表里存着 dict_type / dict_value / dict_label，
 #   比如 dict_type='app_entity_source' 就是"数据渠道"字典（101=车拖车 …）。
@@ -86,6 +106,18 @@ SQL_DIALECT = "ClickHouse" if DB_TYPE == "clickhouse" else "SQLite"
 #       但数据库是 SQLite，报错 "no such function: countIf"。
 #       根因就是方言和实际库不一致。
 #   ★ 现在改成"跟着 DB_TYPE 自动走"——从根上杜绝了这个错误。
+
+# ── ClickHouse LEFT JOIN 未匹配记录的补值机制（join_use_nulls 配置）──
+#   ClickHouse 的 join_use_nulls 决定 LEFT/RIGHT JOIN 未匹配的右表字段补什么：
+#     0 = 补【字段类型的默认值】（UInt/Int→0，String→''，Date→默认日期）
+#         → 此时用 IS NULL 判断"是否关联成功"会失效，必须用关联标记字段 / != 0。
+#     1 = 补 NULL（标准 SQL 行为）→ IS NULL / IS NOT NULL 判断正常有效。
+#   ★ 为什么默认 -1（未知）而不是 0？
+#     任务要求"配置未知时不允许直接假设所有关联字段都补 0"——
+#     宁可少拦一条，也不要把 join_use_nulls=1 的库误判成 0 导致误伤正确 SQL。
+#   ★ 建议在 .env 里显式写 CK_JOIN_USE_NULLS=0 或 1（和真实库对齐）；
+#     配置与真实库不一致时，规则检查会给出错误或漏掉的提示。
+CK_JOIN_USE_NULLS = int(os.getenv("CK_JOIN_USE_NULLS", "-1"))
 
 
 # ═══════════════════════════════════════════════════════════
@@ -176,13 +208,6 @@ APP_ENV = os.getenv("APP_ENV", "production").strip().lower()
 #   False       = 允许正则兜底结果（仅建议本地/测试环境使用）。
 TABLE_PARSE_STRICT = os.getenv("TABLE_PARSE_STRICT", "1") == "1"
 
-# ── V2 流水线异常时的降级策略（fail-closed）──
-#   whitelist（默认）：仅对【白名单内的可恢复故障】回退 legacy，其余一律中止（fail-closed）；
-#   off：绝不回退（最严格）；
-#   always：任何异常都回退（不推荐——会静默掩盖 V2 的 bug，让监控失真）。
-#   ★ 安全校验/业务校验类异常【永不回退】：宁可报错，也不执行未经校验的 SQL。
-LEGACY_FALLBACK_MODE = os.getenv("LEGACY_FALLBACK_MODE", "whitelist").strip().lower()
-
 # ═══════════════════════════════════════════════════════════
 # SQL 逻辑自审层（生成 SQL 后、返回前，额外调一次 LLM 做字段级逻辑诊断）
 #   ★ 仅诊断、不改 SQL、不重跑（见 sql_rules / agent._review_sql）
@@ -190,6 +215,74 @@ LEGACY_FALLBACK_MODE = os.getenv("LEGACY_FALLBACK_MODE", "whitelist").strip().lo
 # ═══════════════════════════════════════════════════════════
 SQL_REVIEW_ENABLED = os.getenv("SQL_REVIEW_ENABLED", "true").strip().lower() \
     in ("1", "true", "yes", "on")
+
+# ★ 分层自审：按风险等级决定是否/如何调 LLM 逻辑自审（见 agent._sql_risk_level / _review_sql）。
+#   LOW    → 跳过 LLM 自审（规则校验已覆盖，省 14s 级无谓调用）
+#   MEDIUM → 轻量自审（只出整体结论 + 风险点，短输出 + 短超时）
+#   HIGH   → 深度自审（逐字段诊断，长输出 + 较长超时；仅少数高风险查询付出此成本）
+SQL_REVIEW_TIMEOUT_MEDIUM = int(os.getenv("SQL_REVIEW_TIMEOUT_MEDIUM", "10"))
+SQL_REVIEW_TIMEOUT_HIGH = int(os.getenv("SQL_REVIEW_TIMEOUT_HIGH", "20"))
+
+# ★ 自动定点修复上限：生成 SQL 后最多允许几次 LLM 自愈（防无限循环 + 省 token）。
+#   任务书要求「最多一次自动定点修复」；修复后仍不达标则拒绝执行。
+MAX_AUTO_FIX = int(os.getenv("MAX_AUTO_FIX", "1"))
+
+
+# ═══════════════════════════════════════════════════════════
+# ★ 需求一致性审核（第六维审核，见 requirement_review.py）
+#   解决的问题：现有五维审核只判断"SQL 合不合法"，不判断"SQL 合不合题意"，
+#   于是"替换写成追加""去掉分组顺手删过滤""漏 GROUP BY"都能静默通过。
+#
+#   ★ 它与 SQL_REVIEW_ENABLED 的区别：
+#     SQL_REVIEW_ENABLED 是【执行之后】的逐字段逻辑诊断（只诊断、不改、不拦）；
+#     本开关是【执行之前】的闸门之一（可阻断、可回灌模型重生成）。
+# ═══════════════════════════════════════════════════════════
+REQ_REVIEW_ENABLED = _env_bool("REQ_REVIEW_ENABLED", True)
+
+#   触发范围：
+#     always      = 每次取数都审（多一次 LLM 调用，3~6 秒）
+#     modify_only = 只审「增量修改 / 含修改动词 / 有歧义」的场景（默认，成本可控）
+#     off         = 完全不审（等价于改造前）
+REQ_REVIEW_MODE = os.getenv("REQ_REVIEW_MODE", "modify_only").strip().lower()
+
+#   是否启用语义层（P2 才有实现；P0 只有确定性规则，置 1 也是空转）。
+#   置 0 = 只跑确定性规则（零 LLM 成本，可单测，适合灰度期先看误报率）。
+REQ_REVIEW_LLM = _env_bool("REQ_REVIEW_LLM", True)
+
+#   是否阻断执行。
+#   ★ 默认 False（只告警不阻断）：P0/P1 灰度期先观察 fail 样本准不准，
+#     误拦率（false_block_rate）< 5% 之后再打开。
+#     打开后：需求审核 fail → 回灌模型修正 → 重审；重试耗尽仍 fail → 拒绝执行。
+REQ_REVIEW_BLOCK = _env_bool("REQ_REVIEW_BLOCK", False)
+
+#   语义层单次超时（秒）。超时一律记 skipped，绝不当成 pass。
+REQ_REVIEW_TIMEOUT = int(os.getenv("REQ_REVIEW_TIMEOUT", "8"))
+
+#   需求审核不通过时，是否把这条 SQL 沉淀为失败经验（failure_type=requirement_mismatch）。
+#   ★ 只在"确定没满足需求且已拒绝执行"时写，灰度期（BLOCK=0）不写 ——
+#     那时 fail 里混着误报，写进去会污染经验库。
+REQ_FAIL_RECORD = _env_bool("REQ_FAIL_RECORD", True)
+
+#   增量修改场景的【经验检索】是否带上上一轮问题一起做 embedding。
+#   ★ 为什么默认开：本轮问句往往是"再加完成率"这种 5 个字，
+#     单靠它做向量检索几乎召不回真正的基线案例，等于每轮从零参考。
+EXP_MODIFY_CTX = _env_bool("EXP_MODIFY_CTX", True)
+
+
+# ═══════════════════════════════════════════════════════════
+# ★ 知识治理：生产检索是否严格只认 approved
+# ═══════════════════════════════════════════════════════════
+#   已按《数据治理方案》完成一轮全量复核（2026-10-27）：
+#     candidate 145 条 → approved 142（含 2 条就地修正）、rejected 3 条，
+#     六层知识已无 candidate，故默认开启严格模式，召回无实质损失。
+#
+#   true （默认）：只有 approved 可进生产检索；AI 新抽取的知识先落 candidate，
+#                  必须经复核（`python _review_governance.py apply`）才生效。
+#                  这是治理方案要求的合规态。
+#   false        ：放宽——candidate 也进检索，仅用于"刚迁移完、知识还没复核"
+#                  的过渡期，或线上召回突然变少、需要临时止血的场景。
+#   ★ 改动前后都建议跑 `python _governance_impact.py` 看影响面。
+GOVERNANCE_STRICT_STATUS = _env_bool("GOVERNANCE_STRICT_STATUS", True)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -218,3 +311,96 @@ AUTO_TABLE_DOC = os.getenv("AUTO_TABLE_DOC", "1") == "1"
 #   真正的硬约束是：
 #     第一层 —— 数据库账号只读 + 表级授权（改不了）
 #     第四层 —— guard.check_tables 校验生成的 SQL（拦模型硬写）
+
+
+# ═══════════════════════════════════════════════════════════
+# ★ SQL 经验中心（经验沉淀 / 检索复用 / 归纳提炼）
+# ═══════════════════════════════════════════════════════════
+#   设计原则：**默认只做「参考」，不做「代替」**。
+#   经验检索只往 Prompt 里加一段带可信度标注的参考，
+#   SQL 仍由现有链路生成、现有闸门校验 —— 这样出问题最多"没用上经验"，
+#   不会"用了错经验直接给你一条错 SQL"。
+#
+#   EXP_ENABLED=0 是一键回滚开关：所有经验逻辑短路，行为回到接入前。
+EXP_ENABLED = _env_bool("EXP_ENABLED", True)
+
+# 成功案例优先检索（把已发布/候选的黄金 SQL 作为 Prompt 参考）
+EXP_SUCCESS_RECALL = _env_bool("EXP_SUCCESS_RECALL", True)
+# 失败经验预防（Prompt 提示 + 生成后确定性检查）
+EXP_FAIL_PREVENT = _env_bool("EXP_FAIL_PREVENT", True)
+# 命中失败模式时是否自动修一轮（默认关：多一次 LLM 调用，且会改变现有重试行为；
+#   评测 C/D 组会打开它来量化收益）
+EXP_FAIL_REPAIR = _env_bool("EXP_FAIL_REPAIR", False)
+# 归纳规则/模板参与检索（只有 status=approved 的规则会进来）
+EXP_RULES = _env_bool("EXP_RULES", True)
+# 精确复用（问题完全相同 + 正式黄金 SQL + 通过全部闸门 → 直接执行）
+#   ★ 默认关：这是唯一一条「不经过模型」的路径，必须先有评测数据支撑再开。
+EXP_EXACT_REUSE = _env_bool("EXP_EXACT_REUSE", False)
+
+# 注入条数上限（控制 token 成本；无匹配时零开销）
+EXP_MAX_CASES = int(os.getenv("EXP_MAX_CASES", "2"))
+EXP_MAX_FAILURES = int(os.getenv("EXP_MAX_FAILURES", "3"))
+EXP_MAX_RULES = int(os.getenv("EXP_MAX_RULES", "2"))
+
+# 分数阈值（低于阈值不注入）
+EXP_MIN_SCORE = float(os.getenv("EXP_MIN_SCORE", "0.55"))
+EXP_FAIL_MIN_SCORE = float(os.getenv("EXP_FAIL_MIN_SCORE", "0.50"))
+EXP_RULE_MIN_SCORE = float(os.getenv("EXP_RULE_MIN_SCORE", "0.55"))
+
+# ── 语义模型接入（知识中心整合 · P2）──
+# ★ 语义模型是「一个业务主题 = 一个模型」的审核通过的结构化语义资产。
+#   命中时作为【权威约束】注入 Prompt（优先级高于经验参考）；
+#   未命中时零开销、零行为变化。
+# ★ 默认关闭（灰度）：先评测接入前后的问数效果，再决定是否默认开启。
+#   SEMANTIC_MODEL_ENABLED=0 是一键回滚开关：所有语义模型逻辑短路，行为回到接入前。
+SEMANTIC_MODEL_ENABLED = _env_bool("SEMANTIC_MODEL_ENABLED", False)
+# 注入模型数上限（控制 token 成本；匹配不到时零开销）
+SEMANTIC_MODEL_MAX = int(os.getenv("SEMANTIC_MODEL_MAX", "2"))
+
+
+# 排序权重（★ 这是**初始启发式**，最终值要靠 evaluation/experiments/experience 的
+#   四组对照实验来定。权重之和为 1，便于解释：分数 = Σ(权重 × 分项)）
+#     sim      语义相似度         —— 问题像不像
+#     table    表集合重合度       —— 是不是同一条业务线
+#     metric   指标口径重合度     —— 口径是否一致（最影响正确性）
+#     trust    可信等级           —— 是否正式黄金 SQL
+#     verify   结果验证等级       —— 有没有真的验证过
+#     recency  新鲜度             —— 表结构/口径会变
+#   ⚠️ 调权重请同步跑一遍评测，不要凭感觉改。
+EXP_RANK_WEIGHTS = {
+    "sim":     float(os.getenv("EXP_W_SIM", "0.45")),
+    "table":   float(os.getenv("EXP_W_TABLE", "0.15")),
+    "metric":  float(os.getenv("EXP_W_METRIC", "0.20")),
+    "trust":   float(os.getenv("EXP_W_TRUST", "0.12")),
+    "verify":  float(os.getenv("EXP_W_VERIFY", "0.05")),
+    "recency": float(os.getenv("EXP_W_RECENCY", "0.03")),
+}
+
+
+# ═══════════════════════════════════════════════════════════
+# 取数结果缓存（result_cache.py）
+# ═══════════════════════════════════════════════════════════
+# ★ 为什么默认开 120 秒？
+#   一次取数 20~35 秒 + 一次 LLM 计费，而日报/周报类问题高度重复。
+#   120 秒足以吃掉"刷新页面""两个人前后脚问同一句"这类重复，
+#   又短到不会让用户觉得"系统在骗我"（数仓本身通常就是 T+1）。
+#
+# ★ 缓存 key 已包含：问题 + 用户 + 角色 + 可见表指纹 + 知识指纹 + 方言 + 模型 + 经验开关。
+#   这意味着：改口径 / 改权限 / 换模型 / 切经验开关，缓存都会自动失效。
+#
+# ★ 想彻底关掉就设 RESULT_CACHE_TTL=0（评测、排障、对账时建议关）。
+RESULT_CACHE_TTL = int(os.getenv("RESULT_CACHE_TTL", "120"))
+RESULT_CACHE_MAX = int(os.getenv("RESULT_CACHE_MAX", "200"))
+# 知识指纹自身的缓存时间（秒）—— 太长会让"改了知识但缓存没失效"的窗口变大
+RESULT_CACHE_KFP_TTL = int(os.getenv("RESULT_CACHE_KFP_TTL", "30"))
+
+
+# ═══════════════════════════════════════════════════════════
+# Prompt 落盘（排障用）
+# ═══════════════════════════════════════════════════════════
+#   PROMPT_DUMP=1 时，每次取数把最终 system prompt 写成
+#   logs/prompt/<时间>-<问题哈希>.txt，可逐段查看、可 diff 两次改动。
+#   默认关闭：一次取数一个文件，长期开会把磁盘写满。
+PROMPT_DUMP = _env_bool("PROMPT_DUMP", False)
+PROMPT_DUMP_DIR = os.getenv("PROMPT_DUMP_DIR", "logs/prompt")
+

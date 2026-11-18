@@ -13,6 +13,7 @@ server.py —— FastAPI 后端（Web API 层）
     然后浏览器打开 http://127.0.0.1:8000
 """
 import os
+import copy                                       # 缓存命中时深拷贝，避免改写污染缓存对象
 import csv                                        # 导出 CSV（标准库，无额外依赖）
 import io                                         # 内存文件流（导出 Excel/CSV 用）
 import asyncio                                      # 让同步阻塞的取数流程不卡住事件循环
@@ -24,6 +25,8 @@ import math                                         # 处理 nan/inf（JSON 不�
 from urllib.parse import quote                    # 中文文件名做 RFC 5987 编码
 from fastapi import FastAPI, HTTPException, Request   # Web 框架（Request 用于读取登录 token）
 from fastapi.responses import FileResponse, Response   # 返回 HTML 文件 / 导出文件
+from fastapi.responses import StreamingResponse        # ★ SSE 流式响应（问数执行过程实时推送）
+from fastapi.staticfiles import StaticFiles        # ★ 托管 frontend/static（CSS/JS 拆分后需要）
 from pydantic import BaseModel                  # 定义请求体的数据结构
 
 import config          # 配置
@@ -37,10 +40,21 @@ import knowledge       # 业务知识访问入口（表清单等）
 import rag             # 检索
 import suggest         # 根据反馈生成优化建议（把"踩坑"翻译成"该改哪条知识"）
 import agent           # 编排（核心流程）
+import nl_answer       # ★ 自然语言回答生成（取数结果 → 结论，支持按钮按需生成）
 import exporter        # 知识库导出（JSON / Markdown）
+import ossie_adapter   # ★ Apache Ossie 标准适配层（语义模型 YAML/JSON 导入导出）
+import semantic_object_builder  # ★ 统一语义对象组装层（融合式：知识表 → OSSIE 对象动态映射 + 写回）
 import ai_ingest       # AI 自动整合录入知识库（输入口径逻辑 → AI 分类 → 自动落库）
 import join_suggest    # ★ JOIN 关联字段推荐（选表 → 推荐关联字段 → 自动拼 join_sql）
 import permission      # ★ 字段级权限引擎（ALLOW/MASK/DENY + 审计）
+import result_cache    # ★ 取数结果缓存（同问同人同权限直接复用，省 LLM 与等待）
+import clarification   # ★ 多轮澄清交互（指标口径歧义 → 先确认再查询）
+import query_understanding  # ★ 查询理解（澄清流程需先拿到结构化意图）
+import semantic_layer       # ★ 语义层（澄清流程复用 enrich/retrieve）
+import task_state           # ★ 任务状态注册表 + SSE 事件协议（问数流式改造）
+import ontology             # ★ 本体建模（Object/Attribute/Relation/Rule 登记 + 实体详情聚合）
+import semantic_modeling    # ★ 语义建模（关系模型表清单/表级Join/维度/指标分类）
+import lineage              # ★ 逻辑视图（语义资产血缘，只读聚合）
 
 from fastapi.responses import JSONResponse
 from clickhouse_connect.driver.exceptions import OperationalError as _CHOpsErr
@@ -90,6 +104,17 @@ _PUBLIC_PATHS = {
     "/", "/favicon.ico", "/logo.png", "/logo-mark.png", "/api/ping",
     "/api/auth/login", "/api/auth/me", "/api/auth/logout",
 }
+# ★ 静态资源（frontend/static 下的 CSS/JS）必须免登录：
+#   登录页本身就依赖它们，若要求带 token，用户会看到一个没有样式的白板。
+#   这里用前缀而不是逐个列文件 —— 每加一个 JS 都要回来改白名单，迟早漏。
+_PUBLIC_PREFIXES = ("/static/")
+
+
+def _is_public(path: str) -> bool:
+    """公开路径判定：精确白名单 + 前缀（静态资源）。"""
+    return (path in _PUBLIC_PATHS
+            or path.startswith(_PUBLIC_PREFIXES)
+            or path.startswith("/docs") or path.startswith("/openapi"))
 
 # ★ 强制改密期间仍允许访问的接口：只放"看自己是谁"和"改自己密码"。
 _MUST_CHANGE_ALLOWED = {"/api/auth/me", "/api/auth/logout", "/api/me/password"}
@@ -98,9 +123,17 @@ _MUST_CHANGE_ALLOWED = {"/api/auth/me", "/api/auth/logout", "/api/me/password"}
 def _required_role(method: str, path: str) -> str:
     """按「方法 + 路径」判断所需角色。默认 admin（新增接口自动受保护）"""
     m = (method or "GET").upper()
-    if path in _PUBLIC_PATHS or path.startswith("/docs") or path.startswith("/openapi"):
+    if _is_public(path):
         return "public"
-    if path in ("/api/ask", "/api/status", "/api/me/password", "/api/permission/my-access"):
+    if path in ("/api/ask", "/api/nl-answer", "/api/status", "/api/me/password",
+                "/api/permission/my-access"):
+        return "user"
+    # ★ SSE 流式问数（/api/ask/stream）与任务状态/取消（/api/task/*）：
+    #   都是普通用户的核心问数能力，登录即可（与 /api/ask 同级）。
+    if path == "/api/ask/stream" or path.startswith("/api/task"):
+        return "user"
+    # 多轮澄清是普通用户的核心问数能力（与 /api/ask 同级）：登录即可。
+    if path.startswith("/api/clarify"):
         return "user"
     # 提交反馈是普通用户的核心能力；查看/处理反馈只有管理员
     if path == "/api/feedback" and m == "POST":
@@ -144,7 +177,15 @@ async def _auth_middleware(request: Request, call_next):
 
     need = _required_role(request.method, path)
     if need == "public":
-        return await call_next(request)
+        resp = await call_next(request)
+        # ★ 静态资源（CSS/JS）必须"每次都回源确认"，不能靠浏览器启发式缓存。
+        #   为什么不用 max-age？—— 没有构建步骤，文件名不带哈希指纹。
+        #   一旦缓存住，改了 JS 用户刷新还是旧的，排查时会被误导成"代码没生效"。
+        #   no-cache ≠ 不缓存：配合 StaticFiles 自动发出的 ETag，
+        #   文件没变时返回 304（几十字节），变了才重新下载 —— 既不踩坑又不浪费流量。
+        if path.startswith("/static/"):
+            resp.headers["Cache-Control"] = "no-cache"
+        return resp
     if user is None:
         return JSONResponse(status_code=401, content={
             "error": "未登录或登录已过期", "type": "unauthorized",
@@ -250,6 +291,17 @@ def _clean_nan(obj):
 # ═══════════════════════════════════════════════════════════
 class AskBody(BaseModel):
     question: str                                   # 用户问题
+    base_query_id: str = ""                         # 上一轮查询上下文 id（增量修改时携带）
+    want_answer: bool = False                       # 是否生成自然语言回答（默认否，前端按钮按需）
+
+
+class NlAnswerBody(BaseModel):
+    """按需生成自然语言回答：前端把已展示的问题 + 结果列 + 行数据回传即可。"""
+    question: str
+    columns: list = []
+    rows: list = []
+    metric_defs: str = ""                           # 指标口径（取数时已算好，回传以保留口径说明）
+    ambiguity: str = ""                             # 歧义/假设说明
 
 class ContentBody(BaseModel):
     content: str                                    # 配置内容
@@ -259,6 +311,7 @@ class MetricBody(BaseModel):
     definition: str = ""                            # 业务口径
     doc: str = ""                                   # 富文本描述
     tables: list[str] = []                          # 依赖的表
+    expression: str | None = None                   # ★ OSSIE 标准表达式（None=不处理）
 
 class MetricEnabledBody(BaseModel):
     enabled: bool                                   # 是否开放该指标给 AI
@@ -272,6 +325,14 @@ class AclBody(BaseModel):
 
 class KbCommentBody(BaseModel):
     comment: str = ""                               # 业务注释（空 = 清除）
+    dimension_type: str | None = None               # ★ 字段维度类型（None=不处理；""=清除；time/geo/status/type/channel=设置）
+
+
+class GovActionBody(BaseModel):
+    """知识复核动作（页面「通过 / 拒绝 / 退回」按钮）"""
+    layer: str = ""      # metrics / entities / table_comments / column_comments / dict_entries / relationships / kb_docs
+    key: str = ""        # 该层的业务键（字段注释是「表名.字段名」）
+    action: str = ""     # approve / reject / candidate
 
 class DictBody(BaseModel):
     dict_type: str = ""                             # 来源字典类型（便于溯源/重新导入）
@@ -304,6 +365,7 @@ class EntityBody(BaseModel):
     grain: str = ""                                 # 粒度：一行=一个什么
     comment: str = ""                               # 业务说明
     keywords: list[str] = []                        # 中文别名/同义词
+    primary_key: list[str] = []                     # ★ OSSIE Dataset.primary_key（主键字段）
     enabled: bool = True                            # 是否启用
     old_name: str = ""                              # ★ 编辑改名时传【原实体名】（用于删旧行）
 
@@ -316,6 +378,8 @@ class RelationshipBody(BaseModel):
     cardinality: str = "1:1"                        # 1:1 / 1:N（1:N 建议 pre_agg_required）
     pre_agg_required: bool = False                  # 右表是否需先 GROUP BY 预聚合
     rule_note: str = ""                             # 业务说明
+    from_columns: list[str] = []                    # ★ OSSIE Relationship.from_columns
+    to_columns: list[str] = []                      # ★ OSSIE Relationship.to_columns
     enabled: bool = True
     old_id: int | None = None                       # ★ 编辑时传原记录 id（改了左右实体时删旧行）
 
@@ -350,6 +414,53 @@ class SuggestJoinBody(BaseModel):
 class IngestItemBody(BaseModel):
     type: str                                       # metric/entity/relationship/column_comment/dict/doc
     data: dict = {}                                 # 编辑后重新落库的数据
+
+
+class SemanticModelBody(BaseModel):
+    """语义模型创建/编辑（模型级元数据 + 内部模型 JSON）"""
+    name: str                                       # 模型名（业务主题名，唯一）
+    description: str = ""                           # 人类可读描述
+    datasets: list = []                             # 内部数据集列表
+    metrics: list = []                              # 内部指标列表（模型作用域）
+    relationships: list = []                        # 内部关系列表
+    model_extensions: dict = {}                     # 模型级扩展属性
+    status: str = ""                                # 手动创建默认 draft；留空由后端决定
+
+
+class SemanticModelStatusBody(BaseModel):
+    status: str                                     # draft/candidate/approved/rejected/deprecated
+
+
+class OssieImportBody(BaseModel):
+    """OSSIE 导入：前端读取文件文本后 POST 上来（content 为 YAML/JSON 原文）"""
+    content: str                                    # YAML/JSON 文本
+    format: str = ""                                # 可选：显式指定 yaml/json（留空自动识别）
+    model_name: str = ""                            # 可选：指定目标模型名（留空用文档内 name）
+
+
+class BizDomainBody(BaseModel):
+    """业务域创建/编辑（复用 data_domains，domain_type='business_domain'）"""
+    name: str                                       # 编码（如 order）
+    display_name: str = ""                          # 名称（如 订单）
+    description: str = ""
+    owner: str = ""                                 # 负责人
+    department: str = ""                            # 所属部门
+    enabled: bool = True
+
+
+class BizSubjectBody(BaseModel):
+    """业务主题创建/编辑（挂在业务域下）"""
+    name: str                                       # 标识（如 order_operation）
+    domain_name: str                                # 归属业务域
+    display_name: str = ""
+    description: str = ""
+    enabled: bool = True
+
+
+class ScopeAssetBody(BaseModel):
+    """业务域/主题 资产关联"""
+    asset_type: str                                 # entity/metric/relationship/golden_sql/doc/rule/feedback
+    asset_key: str                                  # 资产标识
 
 
 # ═══════════════════════════════════════════════════════════
@@ -391,6 +502,35 @@ def static_asset(request: Request):
     # 图标几乎不变，让浏览器缓存一天，省掉每次刷新的请求
     return FileResponse(path, media_type=mime,
                         headers={"Cache-Control": "public, max-age=86400"})
+
+
+# ═══════════════════════════════════════════════════════════
+# ①-c ★ 前端静态资源（CSS / JS）
+# ═══════════════════════════════════════════════════════════
+#  【为什么现在需要这个？】
+#    前端原来是"单文件零构建"：HTML 里内联 <style> 和 <script>，
+#    整个 index.html 7118 行、357 KB。改一个按钮要滚动上千行，
+#    git 冲突几乎必然，前端测试更无从下手。
+#    2026-10-29 按业务域把它拆成 index.html + static/{css,js}，
+#    拆出的代码与原文逐字节相同（不是重写，是搬家）。
+#
+#  【为什么用 StaticFiles 而不是再写一个白名单字典？】
+#    图标只有 3 个，手写白名单没问题；但静态资源是会持续增加的（12 个 JS 起步）。
+#    每加一个文件都要改 Python，迟早漏一次 —— 漏了就是线上 404。
+#    Starlette 的 StaticFiles 已经处理好目录穿越（../）、404、ETag、304，
+#    自己再写一遍只会多一处可能写错的地方。
+#
+#  【安全边界】
+#    · 挂载在 /static，只暴露 frontend/static 这一层目录，源码、SQLite、.env 都不在里面。
+#    · 目录遍历（/static/../server.py）由 StaticFiles 内部拦截，返回 404。
+#    · 这些文件是**公开**的（登录页就要用），已在 _PUBLIC_PREFIXES 里；
+#      真正的权限判断在后端接口上，前端文件本身不含任何数据。
+#    · 前端仍然只是"壳"：所有业务逻辑与权限判断都在后端，拿到 JS 源码也得不出数据。
+_STATIC_DIR = os.path.join(os.path.dirname(__file__), "frontend", "static")
+if os.path.isdir(_STATIC_DIR):
+    app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
+# ↑ 目录不存在时跳过挂载，而不是直接崩：老部署里如果只拷了 index.html，
+#   页面会"没样式但能打开"，比整个服务起不来更容易定位问题。
 
 
 # ═══════════════════════════════════════════════════════════
@@ -707,26 +847,13 @@ def _result_preview(columns, rows, max_rows=3):
     if rows and len(rows) > max_rows:
         out.append(f"...（共 {len(rows)} 行）")
     return "\n".join(out)
-@app.post("/api/ask")
-async def api_ask(body: AskBody, request: Request):
-    """自然语言 → SQL → 结果
+def _build_ask_payload(result, index):
+    """把 agent 的返回结果组装成前端需要的响应体（含列中文名、取值翻译、脱敏信息）
 
-    ★ 用线程池跑（agent.ask 内部有 LLM 调用 + 多次 ClickHouse 查询，
-      单个复杂查询可能跑 40~70 秒）。若不异步，单 worker 的 uvicorn 会被这一个
-      请求占满事件循环，期间所有其他请求（含页面其他点击）都排队 → 前端"一直加载"。
-      改为 asyncio.to_thread 后，事件循环不阻塞，多个取数请求可并发，
-      且不会拖垮页面其它接口。
+    ★ 为什么单独抽成函数？
+      ① 这段要 40 多行字典字面量，塞在 api_ask 里会让主流程读不出重点；
+      ② 结果缓存需要"整段可缓存"，抽出函数后缓存边界才清晰（见 api_ask）。
     """
-    _ensure_db()
-    question = body.question.strip()                # 去掉首尾空白
-    if not question:
-        raise HTTPException(status_code=400, detail="问题不能为空")
-
-    index = get_index()                             # 拿索引（主线程，避免传到线程里重建）
-    user = getattr(request.state, "user", None) or {}
-    # ★ 传可信用户：agent 内据此启用字段级权限闸门（DENY 拦截 + MASK 脱敏）
-    result = await asyncio.to_thread(agent.ask, index, question, user)   # ★ 线程池跑，不卡事件循环
-
     # ★ 展示用：SQL 排版 + 列中文名 + 取值翻译
     #   都放在这里（而不是 agent 里）—— agent 负责"算得对"，
     #   server 负责"显示得好"，两边职责别混。
@@ -738,7 +865,7 @@ async def api_ask(body: AskBody, request: Request):
         except Exception as e:
             print(f"⚠️ 结果列中文名解析失败（不影响数据）：{e}")
 
-    payload = _clean_nan({
+    return _clean_nan({
         "question": result["question"],
         "ok": result["ok"],
         "sql": result["sql"],
@@ -756,14 +883,19 @@ async def api_ask(body: AskBody, request: Request):
         "attempts": result["attempts"],
         "pipeline": result.get("pipeline"),   # ★ 流水线标记：v2=企业级 / legacy=旧兜底（异常回退时）
         "review": result.get("review"),       # ★ SQL 逻辑自审报告（逐字段诊断，只诊断不改 SQL）
+        "sql_risk": result.get("sql_risk"),   # ★ 分层自审风险等级（LOW/MEDIUM/HIGH）
         # ── 企业级流水线新增字段（Semantic Layer + Validator + NL Answer）──
         "understanding": result.get("understanding"),   # 查询理解：意图/指标/实体
         "validation": result.get("validation"),         # SQL 生成前 5 维校验报告
         "result_warnings": result.get("result_warnings"),  # 执行后结果校验 warning
         "validation_status": result.get("validation_status"),  # ★ 校验状态：passed/failed/error/degraded/blocked
         "answer": result.get("answer"),                 # 自然语言回答
+        "nl_meta": result.get("nl_meta"),               # ★ {metric_defs, ambiguity} 供前端「生成结论」按钮回传
         "table_swap": result.get("table_swap", ""),     # ★ 换表说明（点名表 vs 实际用表）
         "trace": result.get("trace"),                   # 各阶段耗时（可观测性）
+        # ★ 本次结果是否来自缓存（前端可据此提示"秒回是因为命中缓存"，
+        #   而不是让用户以为模型变快了 —— 这直接影响他们对结果的信任判断）
+        "cache_hit": False,
         # ── 降级可观测性：V2 异常降级 legacy 时留痕（便于统计降级率/告警）──
         "degraded": result.get("degraded", False),          # 是否发生降级
         "degrade_reason": result.get("degrade_reason", ""),  # 降级原因（异常类型+信息）
@@ -772,54 +904,183 @@ async def api_ask(body: AskBody, request: Request):
         "masked": result.get("masked", False),                # 是否发生结果脱敏
         "mask_map": result.get("mask_map") or {},             # {列名: 脱敏规则}
         "deny_reasons": (result.get("perm_decision") or {}).get("deny_reasons") or [],
+        # ── ★ SQL 经验中心：本次参考了哪些历史经验 / 命中了哪些已知错误模式 ──
+        #    没有命中时为空，前端不展示；命中时前端会在结果上方给出提示条。
+        "experience": result.get("experience"),
+        "experience_warnings": result.get("experience_warnings") or [],
+        # ── ★ 需求一致性审核（第六维）──
+        #   status_chain 把"生成/校验/需求/执行/结果/业务/需求完成"七个状态分开，
+        #   ★ 前端不要用一个绿勾表示"成功"——那会把"执行成功但需求没满足"也画成成功。
+        "status_chain": result.get("status_chain"),
+        "req_review": result.get("req_review"),          # {verdict, issues, degraded, errors}
+        # ★ 审核多轮仍不通过时，告诉用户"需要你确认什么"（不是只回一句已拒绝）
+        "needs_clarification": result.get("needs_clarification"),
     })
 
-    # ★ 自动落一条取数记录（个人历史 + 审核通道）
-    #   为什么放在服务端而不是让前端上报？
-    #     前端能被绕过 —— 用户不点上报，这次取数就"不存在"，历史永远不全。
-    #     审核也需要"这次到底跑了什么"的原始证据，不能全靠用户自述。
-    #   落库失败绝不影响取数本身：用户要的是数，记录只是附加动作。
-    try:
-        who = getattr(request.state, "user", None) or {}
-        rid = config_store.add_query_record({
-            "username": who.get("username", ""),
-            "question": payload.get("question", ""),
-            "sql": payload.get("sql", ""),
-            "ok": payload.get("ok"),
-            "tables": payload.get("tables"),
-            "metrics": payload.get("metrics"),
-            "dicts": payload.get("dicts"),
-            "columns": payload.get("columns"),
-            "row_count": payload.get("row_count"),
-            "result_preview": _result_preview(payload.get("columns"), payload.get("rows")),
-            "answer": payload.get("answer"),
-            # ★ 处理过程 + 查询理解也要一起存：
-            #   审核的人拿到"一条 SQL"其实很难判断对错 ——
-            #   他需要知道"模型当时把问题理解成了什么（意图/指标/维度）"，
-            #   才能分清是"理解错了"还是"口径写错了"。这两类问题的修法完全不同。
-            "info": payload.get("info", ""),
-            "attempts": payload.get("attempts"),
-            "pipeline": payload.get("pipeline"),
-            "understanding": payload.get("understanding"),
-        })
-        payload["record_id"] = rid
-        # ★ 成功取数落一份结果快照，供导出/回看；
-        #   失败不影响取数本身（导出会提示"该记录没有快照"）。
-        if payload.get("ok") and payload.get("rows"):
-            try:
-                config_store.save_result_snapshot(
-                    rid, payload.get("columns") or [], payload.get("rows") or [])
-            except Exception as se:
-                print(f"⚠️ 结果快照落库失败（不影响取数）：{se}")
-    except Exception as e:
-        print(f"⚠️ 取数记录落库失败（不影响取数）：{e}")
 
-    # ★ 权限判定审计（不落敏感原始值；失败不影响取数）
-    try:
-        _audit_permission(request, payload, result)
-    except Exception as e:
-        print(f"⚠️ 权限审计落库失败（不影响取数）：{e}")
+@app.post("/api/ask")
+async def api_ask(body: AskBody, request: Request):
+    """自然语言 → SQL → 结果（统一入口）
 
+    ★ 本接口同时承担两类请求，靠可选字段 base_query_id 区分：
+      ① 增量修改：携带上一轮查询上下文 id → 在上一轮基础上做自然语言修改；
+      ② 普通问数：不携带 → 走「澄清 / 直接执行」统一决策（与旧 /api/clarify/start 同逻辑）。
+
+    ★ 用线程池跑（agent.ask 内部有 LLM 调用 + 多次 ClickHouse 查询，
+      单个复杂查询可能跑 40~70 秒）。若不异步，单 worker 的 uvicorn 会被这一个
+      请求占满事件循环，期间所有其他请求（含页面其他点击）都排队 → 前端"一直加载"。
+      改为 asyncio.to_thread 后，事件循环不阻塞，多个取数请求可并发，
+      且不会拖垮页面其它接口。
+    """
+    _ensure_db()
+    question = body.question.strip()                # 去掉首尾空白
+    if not question:
+        raise HTTPException(status_code=400, detail="问题不能为空")
+
+    index = get_index()                             # 拿索引（主线程，避免传到线程里重建）
+    user = getattr(request.state, "user", None) or {}
+
+    # ★ 增量修改：携带上一轮查询上下文 id → 在上一轮基础上做自然语言修改，而非全新查询
+    if body.base_query_id:
+        return await _modify_query(index, user, question, body.base_query_id, request,
+                                   want_answer=body.want_answer)
+
+    return await _run_start(index, user, question, request, do_cache=True,
+                            want_answer=body.want_answer)
+
+
+@app.post("/api/nl-answer")
+async def api_nl_answer(body: NlAnswerBody, request: Request):
+    """按需生成自然语言回答（前端「生成结论」按钮触发，不重跑 SQL）。
+
+    与 /api/ask 的区别：本接口不查库、不生成 SQL，只拿前端已展示的
+    question + columns + rows 调用 nl_answer.answer，把结果转成结论。
+    """
+    q = (body.question or "").strip()
+    if not q:
+        raise HTTPException(status_code=400, detail="问题不能为空")
+    if not body.columns or not body.rows:
+        return {"answer": "（无结果数据，无法生成结论）"}
+
+    # 线程池跑（LLM 调用，避免阻塞事件循环）
+    answer = await asyncio.to_thread(
+        nl_answer.answer, q, body.columns, body.rows,
+        body.metric_defs, body.ambiguity)
+    return {"answer": answer}
+
+
+def _attach_query_context(request, payload, result, question):
+    """★ 保存本次查询上下文并挂到响应体，供后续「当前窗口增量修改」锚定。
+
+    按 username 归属持久化（防越权复用他人上下文）。失败不影响取数本身。
+    """
+    try:
+        username = (getattr(request.state, "user", None) or {}).get("username", "")
+        ctx = {
+            "original_question": result.get("question") or question,
+            "final_question": question,
+            "understanding": result.get("understanding") or {},
+            "sql": payload.get("sql") or "",
+            "ok": bool(payload.get("ok")),
+            "error": payload.get("error") or "",
+            "tables": payload.get("tables") or [],
+            "metrics": payload.get("metrics") or [],
+            "status": "success" if payload.get("ok") else "failed",
+        }
+        cid = config_store.save_query_context(username, ctx)
+        payload["query_context_id"] = cid
+    except Exception as e:
+        print(f"⚠️ 查询上下文保存失败（不影响取数）：{e}")
+
+
+async def _run_start(index, user, question, request, do_cache, want_answer=False):
+    """★ 澄清 / 直接执行 决策的统一实现（/api/ask 与 /api/clarify/start 共用）。
+
+    do_cache=True 时（/api/ask）对直行结果做整段缓存；/api/clarify/start 不缓存。
+    """
+    understanding = query_understanding.understand(question, _clarify_index()[1])
+    metrics = _clarify_metrics()
+    entities = _clarify_entities()
+    decision = clarification.decide_full(question, understanding, metrics, entities)
+
+    # ── A：直接执行（口径唯一可信）──
+    if decision["action"] == clarification.ACTION_EXECUTE:
+        cache_key = result_cache.make_key(index, question, user) if do_cache else None
+        if do_cache:
+            hit = result_cache.get(cache_key)
+            if hit is not None:
+                payload = copy.deepcopy(hit["payload"])     # 副本：下面的改写不能污染缓存对象
+                payload["cache_hit"] = True
+                payload["trace"] = [{"step": "cache_hit", "ms": 0}]
+                payload["info"] = (payload.get("info") or "") + " | 缓存命中"
+                # ★ 权限判定一并还原：命中缓存也必须留下权限审计
+                result = {"perm_decision": hit.get("perm") or {}}
+                _record_ask(request, payload, result)
+                return payload
+        result = await asyncio.to_thread(agent.ask, index, question, user,
+                                         want_answer=want_answer)
+        payload = _build_ask_payload(result, index)
+        _record_ask(request, payload, result)
+        _attach_query_context(request, payload, result, question)
+        if do_cache and result_cache.should_cache(result):
+            result_cache.put(cache_key, {"payload": payload,
+                                         "perm": result.get("perm_decision") or {}})
+        payload["clarify"] = {"kind": "direct", "reason": decision["reason"]}
+        return payload
+
+    # ── B / D：发起澄清 或 知识不足（不执行 SQL）──
+    query_id = secrets.token_urlsafe(12)
+    state = clarification.new_state(user.get("username", ""), question, understanding,
+                                    metrics, entities, decision=decision)
+    state["query_id"] = query_id
+    state["session_id"] = _bearer_token(request) or ""
+    if decision["action"] == clarification.ACTION_CLARIFY:
+        state["status"] = clarification.STATUS_CLARIFYING
+        state["clarification_round"] = 0
+        slot = decision.get("clarify_slot") or "metric"
+        state["pending_clarifications"] = [clarification._pending_for_slot(
+            question, decision, slot, 1)]
+    else:
+        state["status"] = clarification.STATUS_NEEDS_KNOWLEDGE
+    config_store.clarify_save(state)
+    return {
+        "kind": decision["action"],          # clarify / unknown
+        "query_id": query_id,
+        "reason": decision["reason"],
+        "clarification": state["pending_clarifications"][0]
+                          if state["pending_clarifications"] else None,
+    }
+
+
+async def _modify_query(index, user, question, base_query_id, request, want_answer=False):
+    """★ 当前窗口增量修改：在上一轮查询基础上做自然语言修改。
+
+    与「全新查询」的核心区别：带上 base 上下文，agent 会【保留未被明确修改的
+    指标/时间/过滤/维度】，只对用户要求的部分重新生成 SQL；且仍完整经过
+    只读 / 表权限 / 字段级权限 / 业务校验，绝不绕过安全闸门。
+    """
+    username = user.get("username", "")
+    base = config_store.load_query_context(base_query_id, username)
+    if not base:
+        raise HTTPException(status_code=404,
+                            detail="查询上下文不存在或不属于当前用户")
+    base_payload = base.get("payload") or {}
+    modify_context = {
+        # ★ 注入上一轮完整上下文（LLM 据此保留未改部分 + 修正局部）
+        "base_question": base_payload.get("original_question")
+                        or base_payload.get("final_question") or "",
+        "base_understanding": base_payload.get("understanding") or {},
+        "base_sql": base_payload.get("sql") or "",
+        "base_tables": base_payload.get("tables") or [],
+        "base_metrics": base_payload.get("metrics") or [],
+    }
+    result = await asyncio.to_thread(
+        agent.ask, index, question, user, modify_context=modify_context,
+        want_answer=want_answer)
+    payload = _build_ask_payload(result, index)
+    _record_ask(request, payload, result)
+    _attach_query_context(request, payload, result, question)
+    payload["modified_from"] = base_query_id          # 前端可据此提示"基于上轮修改"
     return payload
 
 
@@ -848,6 +1109,607 @@ def _audit_permission(request, payload, result):
         "returned_columns": payload.get("columns") or [],
         "ok": 1 if payload.get("ok") else 0,
     })
+
+
+def _record_ask(request, payload, result):
+    """把一次取数「落库 + 经验使用日志 + 结果快照 + 权限审计」统一收口。
+
+    ★ 为什么抽出来？
+      多轮澄清走到「执行」这一步时，和单轮 /api/ask 是完全同一套记录语义：
+      都要落 query_records（个人历史/审核通道）、记经验使用、存快照、写权限审计。
+      抽成助手避免复制两份 —— 复制会导致"改一处漏一处"（历史/审计漏记是合规空洞）。
+    失败绝不影响取数本身：用户要的是数，记录只是附加动作。
+    """
+    try:
+        who = getattr(request.state, "user", None) or {}
+        rid = config_store.add_query_record({
+            "username": who.get("username", ""),
+            "question": payload.get("question", ""),
+            "sql": payload.get("sql", ""),
+            "ok": payload.get("ok"),
+            "tables": payload.get("tables"),
+            "metrics": payload.get("metrics"),
+            "dicts": payload.get("dicts"),
+            "columns": payload.get("columns"),
+            "row_count": payload.get("row_count"),
+            "result_preview": _result_preview(payload.get("columns"), payload.get("rows")),
+            "answer": payload.get("answer"),
+            "info": payload.get("info", ""),
+            "attempts": payload.get("attempts"),
+            "pipeline": payload.get("pipeline"),
+            "understanding": payload.get("understanding"),
+            "error": payload.get("error", ""),
+            # ★ 双流水线收敛：统一主流程可观测性（fail-closed / 异常原因 / 各阶段耗时）
+            "degraded": payload.get("degraded"),
+            "degrade_reason": payload.get("degrade_reason", ""),
+            "trace": payload.get("trace"),
+            # ★ 需求一致性审核（独立列，便于后续统计通过率与误拦率）
+            "req_verdict": (payload.get("status_chain") or {}).get("requirement_verdict") or "",
+            "req_findings": (payload.get("req_review") or {}).get("issues") or [],
+        })
+        payload["record_id"] = rid
+        # ★ 经验使用日志（召回 / 采用 / 放弃 + 原因）—— 效果归因的唯一来源。
+        try:
+            import sql_experience
+            _match = (result or {}).pop("_exp_match", None)
+            if _match is not None:
+                sql_experience.log_usage(
+                    _match, record_id=rid, question=payload.get("question", ""),
+                    username=who.get("username", ""), ok=payload.get("ok"))
+        except Exception as e:
+            print(f"⚠️ 经验使用日志写入失败（不影响取数）：{e}")
+        # ★ 成功取数落一份结果快照，供导出/回看。
+        if payload.get("ok") and payload.get("rows"):
+            try:
+                config_store.save_result_snapshot(
+                    rid, payload.get("columns") or [], payload.get("rows") or [])
+            except Exception as se:
+                print(f"⚠️ 结果快照落库失败（不影响取数）：{se}")
+    except Exception as e:
+        print(f"⚠️ 取数记录落库失败（不影响取数）：{e}")
+
+    # ★ 权限判定审计（不落敏感原始值；失败不影响取数）
+    try:
+        _audit_permission(request, payload, result)
+    except Exception as e:
+        print(f"⚠️ 权限审计落库失败（不影响取数）：{e}")
+
+
+# ═══════════════════════════════════════════════════════════
+# ②-b ★ 多轮澄清（Query Clarification）
+#   用户问题 → 意图解析 → 可信候选消歧 → {直接执行 | 发起澄清 | 知识不足}
+#   → 用户确认 → 合并意图 → 交给现有 agent.ask 执行（复用 RAG/Validator/Guard）
+# ═══════════════════════════════════════════════════════════
+class ClarifyStartBody(BaseModel):
+    question: str
+    want_answer: bool = False
+
+
+class ClarifyAnswerBody(BaseModel):
+    query_id: str
+    answer: str = ""
+    want_answer: bool = False
+
+
+def _clarify_index():
+    """取索引并确保语义层已增强（复用 understand 的缓存，避免澄清层重复 LLM）。"""
+    index = get_index()
+    sidx = index.get("_semantic")
+    if sidx is None:
+        sidx = semantic_layer.enrich_index(index)
+        index["_semantic"] = sidx
+    return index, sidx
+
+
+def _clarify_metrics():
+    """澄清候选只来自【已审核正式指标】（含 status/source，过滤在 clarification 内）。"""
+    return config_store.get_metrics_with_governance(enabled_only=True)
+
+
+def _clarify_entities():
+    """澄清用【带治理字段】的业务实体清单（含 status/version，判断映射是否 approved）。"""
+    return config_store.get_entities_with_governance()
+
+
+@app.post("/api/clarify/start")
+async def api_clarify_start(body: ClarifyStartBody, request: Request):
+    """多轮澄清入口：判断直接执行、发起澄清、还是知识不足。
+
+    与 /api/ask 的关系：
+      · 决定「直接执行」时，走的是同一套 agent.ask + 落库，结果与 /api/ask 完全一致；
+      · 决定「澄清/知识不足」时，不执行 SQL，只返回待确认问题并持久化状态。
+      /api/ask 单轮接口保持不变，CLI/eval/旧前端不受影响。
+    """
+    _ensure_db()
+    q = (body.question or "").strip()
+    if not q:
+        raise HTTPException(status_code=400, detail="问题不能为空")
+
+    index, sidx = _clarify_index()
+    user = getattr(request.state, "user", None) or {}
+    understanding = query_understanding.understand(q, sidx)
+    metrics = _clarify_metrics()
+    entities = _clarify_entities()
+
+    decision = clarification.decide_full(q, understanding, metrics, entities)
+
+    # ── A：直接执行（口径唯一可信）──
+    if decision["action"] == clarification.ACTION_EXECUTE:
+        result = await asyncio.to_thread(agent.ask, index, q, user,
+                                         want_answer=body.want_answer)
+        payload = _build_ask_payload(result, index)
+        _record_ask(request, payload, result)
+        payload["clarify"] = {"kind": "direct", "reason": decision["reason"]}
+        return payload
+
+    # ── B / D：发起澄清 或 知识不足 ──
+    query_id = secrets.token_urlsafe(12)
+    state = clarification.new_state(user.get("username", ""), q, understanding,
+                                    metrics, entities, decision=decision)
+    state["query_id"] = query_id
+    state["session_id"] = _bearer_token(request) or ""
+
+    if decision["action"] == clarification.ACTION_CLARIFY:
+        state["status"] = clarification.STATUS_CLARIFYING
+        state["clarification_round"] = 0
+        slot = decision.get("clarify_slot") or "metric"
+        state["pending_clarifications"] = [clarification._pending_for_slot(
+            q, decision, slot, 1)]
+    else:
+        state["status"] = clarification.STATUS_NEEDS_KNOWLEDGE
+    config_store.clarify_save(state)
+
+    return {
+        "kind": decision["action"],          # clarify / unknown
+        "query_id": query_id,
+        "reason": decision["reason"],
+        "clarification": state["pending_clarifications"][0]
+                          if state["pending_clarifications"] else None,
+    }
+
+
+@app.post("/api/clarify/answer")
+async def api_clarify_answer(body: ClarifyAnswerBody, request: Request):
+    """提交用户对澄清问题的回答（选选项 / 自由文本 / 其他 / 取消）。"""
+    _ensure_db()
+    user = getattr(request.state, "user", None) or {}
+    username = user.get("username", "")
+    st = config_store.clarify_load(body.query_id, username)
+    if not st:
+        raise HTTPException(status_code=404, detail="澄清会话不存在或不属于当前用户")
+
+    index = get_index()
+    metrics = _clarify_metrics()
+    entities = _clarify_entities()
+    st, outcome = clarification.apply_answer(st, body.answer, metrics, entities)
+    st["query_id"] = body.query_id
+
+    # ── 取消 ──
+    if outcome == "cancelled":
+        config_store.clarify_save(st)
+        return {"kind": "cancelled", "query_id": body.query_id}
+
+    # ── 知识不足（自由文本无法识别 / 轮次上限 / 缺定义）──
+    if outcome == "needs_knowledge":
+        config_store.clarify_save(st)
+        return {"kind": "unknown", "query_id": body.query_id, "reason": st.get("reason", ""),
+                "clarification": (st.get("pending_clarifications") or [None])[0]}
+
+    # ── 还需继续澄清 ──
+    if outcome == "next_clarify":
+        config_store.clarify_save(st)
+        return {"kind": "clarify", "query_id": body.query_id,
+                "clarification": (st.get("pending_clarifications") or [None])[0],
+                "reason": st.get("reason", "")}
+
+    # ── 已消歧 → 执行 ──
+    final_q = clarification.build_final_question(st)
+    override = clarification.build_understanding_override(st)
+    result = await asyncio.to_thread(agent.ask, index, final_q, user,
+                                     understanding_override=override,
+                                     want_answer=body.want_answer)
+    payload = _build_ask_payload(result, index)
+
+    st["status"] = clarification.STATUS_SUCCESS if payload.get("ok") \
+        else clarification.STATUS_FAILED
+    st["final_sql"] = payload.get("sql", "")
+    st["execution_result"] = {
+        "ok": payload.get("ok"), "row_count": payload.get("row_count"),
+        "error": payload.get("error", ""),
+    }
+    st["updated_at"] = clarification._now_iso()
+    config_store.clarify_save(st)
+    _record_ask(request, payload, result)
+
+    payload["clarify"] = {
+        "kind": "done", "query_id": body.query_id,
+        "adopted": clarification.summarize(st),
+    }
+    return payload
+
+
+@app.get("/api/clarify/{query_id}")
+async def api_clarify_get(query_id: str, request: Request):
+    """读取当前澄清状态（归属校验）。"""
+    user = getattr(request.state, "user", None) or {}
+    st = config_store.clarify_load(query_id, user.get("username", ""))
+    if not st:
+        raise HTTPException(status_code=404, detail="澄清会话不存在或不属于当前用户")
+    st.pop("execution_result", None)          # 只读接口不回执行细节，避免误暴露
+    return {"query_id": query_id, **st}
+
+
+@app.post("/api/clarify/{query_id}/cancel")
+async def api_clarify_cancel(query_id: str, request: Request):
+    """取消一次澄清任务（不再执行 SQL）。"""
+    user = getattr(request.state, "user", None) or {}
+    st = config_store.clarify_load(query_id, user.get("username", ""))
+    if not st:
+        raise HTTPException(status_code=404, detail="澄清会话不存在或不属于当前用户")
+    st["status"] = clarification.STATUS_CANCELLED
+    st["updated_at"] = clarification._now_iso()
+    config_store.clarify_save(st)
+    return {"kind": "cancelled", "query_id": query_id}
+
+
+# ═══════════════════════════════════════════════════════════
+# ②-c ★ SSE 流式响应（问数执行过程实时推送）
+#   POST /api/ask/stream            —— 全新问题：澄清决策 + 直接执行 流式
+#   POST /api/clarify/answer/stream —— 澄清确认后：恢复同一任务继续执行 流式
+#   GET  /api/task/{task_id}        —— 断线重连 / 刷新恢复：查任务状态与结果
+#   POST /api/task/{task_id}/cancel —— 用户主动取消
+#
+#   ★ 与同步接口的关系（不另建流水线）：
+#     复用同一套 decide_full / apply_answer / agent.ask / _record_ask 收口，
+#     只是把"一次性等结果"改成"边执行边推事件"。旧 /api/ask、/api/clarify/* 保持不变。
+# ═══════════════════════════════════════════════════════════
+
+class AskStreamBody(BaseModel):
+    question: str
+    want_answer: bool = False
+
+
+class ClarifyAnswerStreamBody(BaseModel):
+    query_id: str
+    answer: str = ""
+    want_answer: bool = False
+    task_id: str = ""                     # 关联的 SSE 任务 id（恢复同一任务，避免重建无上下文任务）
+
+
+def _sse_frame(task_id, event, data):
+    """把一次事件序列化成一条 SSE 帧（`data: {...}\n\n`）。"""
+    import json
+    frame = {
+        "task_id": task_id,
+        "event": event,
+        "data": data,
+        "timestamp": int(time.time() * 1000),   # 毫秒时间戳
+    }
+    return "data: " + json.dumps(frame, ensure_ascii=False, default=str) + "\n\n"
+
+
+def _emit_to_queue(loop, q):
+    """返回两个线程安全的推入函数：emit(event, data) 与 final(kind, payload, result)。
+
+    ★ 为什么必须走 loop.call_soon_threadsafe？
+      asyncio.Queue 不是线程安全的。工作线程（threading.Thread）直接 q.put_nowait()
+      会与事件循环线程的 q.get() 并发操作同一个 deque，造成竞态、损坏队列，
+      进而让 uvicorn 事件循环崩溃（前端表现为"闪退"）。
+      call_soon_threadsafe 会把推入动作调度回事件循环线程执行，保证串行安全。
+    """
+    def emit(event, data):
+        loop.call_soon_threadsafe(q.put_nowait, (event, data))
+
+    def final(kind, payload=None, result=None):
+        loop.call_soon_threadsafe(q.put_nowait, (
+            "__final__", {"kind": kind, "payload": payload, "result": result}))
+    return emit, final
+
+
+async def _sse_stream(task_id, q, request):
+    """把任务事件队列转成 SSE 帧流；收到 __final__ 时落库收口并结束。
+
+    ★ 断线处理：客户端断开会触发 CancelledError → 主动 request_cancel，
+      让仍在跑的工作线程在「执行 SQL 前」停下，避免孤立的 SQL 继续执行。
+    """
+    try:
+        while True:
+            try:
+                event, data = await asyncio.wait_for(q.get(), timeout=15)
+            except asyncio.TimeoutError:
+                # 心跳：复杂查询阶段间隔可能 >15s，发心跳防止代理/浏览器判定超时断开
+                yield _sse_frame(task_id, "heartbeat", {})
+                continue
+
+            if event == "__final__":
+                # ★ 收口：复用 _record_ask 统一落库（历史/审核/经验日志/权限审计），
+                #   与同步接口完全同一套语义，绝不另建记录路径。
+                payload = data.get("payload")
+                result = data.get("result")
+                if payload is not None:
+                    try:
+                        _record_ask(request, payload, result)
+                        _attach_query_context(request, payload, result,
+                                              payload.get("question", ""))
+                    except Exception as e:
+                        print(f"⚠️ SSE 结果落库失败（不影响流）：{e}")
+                    yield _sse_frame(task_id, task_state.EV_RESULT, payload)
+                st = (task_state.get(task_id) or {}).get("status")
+                yield _sse_frame(task_id, task_state.EV_DONE, {"status": st})
+                break
+            yield _sse_frame(task_id, event, data)
+    except asyncio.CancelledError:
+        task_state.request_cancel(task_id)   # 断开 → 取消，避免孤立 SQL 继续执行
+        raise
+
+
+def _ask_stream_worker(loop, q, task_id, index, user, session_token, question, want_answer):
+    """在后台线程里跑「查询理解 → 澄清决策 → 直接执行」，把阶段事件推进 q。
+
+    只做与 agent.ask 相关的编排，落库收口（_record_ask）留给 _sse_stream 处理（它有 request）。
+    """
+    emit, final = _emit_to_queue(loop, q)
+
+    sidx = index.get("_semantic")
+    if sidx is None:
+        sidx = semantic_layer.enrich_index(index)
+        index["_semantic"] = sidx
+
+    emit(task_state.EV_TASK_STARTED, {"question": question})
+    try:
+        understanding = query_understanding.understand(question, sidx)
+        emit(task_state.EV_UNDERSTANDING, {
+            "intent": understanding.get("intent"),
+            "metrics": understanding.get("metrics") or [],
+            "entities": understanding.get("entities") or [],
+        })
+        metrics = _clarify_metrics()
+        entities = _clarify_entities()
+        decision = clarification.decide_full(question, understanding, metrics, entities)
+
+        # ── A：直接执行（口径唯一可信）──
+        if decision["action"] == clarification.ACTION_EXECUTE:
+            cache_key = result_cache.make_key(index, question, user)
+            hit = result_cache.get(cache_key)
+            if hit is not None:
+                # 缓存命中：秒回整段结果，不发阶段事件（与同步 /api/ask 行为一致）
+                payload = copy.deepcopy(hit["payload"])
+                payload["cache_hit"] = True
+                payload["trace"] = [{"step": "cache_hit", "ms": 0}]
+                payload["info"] = (payload.get("info") or "") + " | 缓存命中"
+                payload["clarify"] = {"kind": "direct", "reason": decision["reason"]}
+                task_state.set_status(task_id, task_state.COMPLETED)
+                task_state.set_result(task_id, payload)
+                final("direct", payload=payload,
+                      result={"perm_decision": hit.get("perm") or {}})
+                return
+            result = agent.ask(index, question, user, want_answer=want_answer,
+                               events=emit,
+                               is_cancelled=lambda: task_state.is_cancelled(task_id))
+            if (result or {}).get("cancelled"):
+                task_state.set_status(task_id, task_state.CANCELLED)
+                emit(task_state.EV_ERROR, {"cancelled": True,
+                                           "message": result.get("error") or "已取消"})
+                final("cancelled")
+                return
+            payload = _build_ask_payload(result, index)
+            payload["clarify"] = {"kind": "direct", "reason": decision["reason"]}
+            task_state.set_status(task_id, task_state.COMPLETED)
+            task_state.set_result(task_id, payload)
+            final("direct", payload=payload, result=result)
+            return
+
+        # ── B / D：发起澄清 或 知识不足（不执行 SQL）──
+        query_id = secrets.token_urlsafe(12)
+        state = clarification.new_state(user.get("username", ""), question,
+                                        understanding, metrics, entities, decision=decision)
+        state["query_id"] = query_id
+        state["session_id"] = session_token or ""
+        if decision["action"] == clarification.ACTION_CLARIFY:
+            state["status"] = clarification.STATUS_CLARIFYING
+            state["clarification_round"] = 0
+            slot = decision.get("clarify_slot") or "metric"
+            state["pending_clarifications"] = [clarification._pending_for_slot(
+                question, decision, slot, 1)]
+        else:
+            state["status"] = clarification.STATUS_NEEDS_KNOWLEDGE
+        config_store.clarify_save(state)
+
+        clarif = state["pending_clarifications"][0] if state["pending_clarifications"] else None
+        if decision["action"] == clarification.ACTION_CLARIFY:
+            task_state.set_clarification(task_id, clarif, query_id)
+            task_state.set_status(task_id, task_state.WAITING_CLARIFICATION)
+            emit(task_state.EV_CLARIFICATION_REQUIRED, {
+                "query_id": query_id,
+                "reason": decision["reason"],
+                "clarification": clarif,
+            })
+        else:
+            task_state.set_status(task_id, task_state.FAILED)
+            emit(task_state.EV_ERROR, {"kind": "unknown", "query_id": query_id,
+                                       "reason": decision["reason"]})
+        final(decision["action"])
+    except task_state.TaskCancelled as tc:
+        task_state.set_status(task_id, task_state.CANCELLED)
+        emit(task_state.EV_ERROR, {"cancelled": True, "message": str(tc)})
+        final("cancelled")
+    except Exception as e:
+        task_state.set_status(task_id, task_state.FAILED)
+        emit(task_state.EV_ERROR, {"message": f"{type(e).__name__}: {e}"})
+        final("error")
+
+
+def _answer_stream_worker(loop, q, task_id, index, user, st, answer, want_answer):
+    """在后台线程里「应用澄清回答 → 继续澄清 / 执行」，阶段事件推进 q。
+
+    与 api_clarify_answer 同逻辑，只是执行阶段走流式；落库收口留给 _sse_stream。
+    """
+    emit, final = _emit_to_queue(loop, q)
+
+    emit(task_state.EV_TASK_STARTED, {"question": st.get("original_question", "")})
+    try:
+        metrics = _clarify_metrics()
+        entities = _clarify_entities()
+        st2, outcome = clarification.apply_answer(st, answer, metrics, entities)
+        st2["query_id"] = st.get("query_id")
+
+        # ── 取消 ──
+        if outcome == "cancelled":
+            config_store.clarify_save(st2)
+            task_state.set_status(task_id, task_state.CANCELLED)
+            final("cancelled")
+            return
+        # ── 知识不足 ──
+        if outcome == "needs_knowledge":
+            config_store.clarify_save(st2)
+            task_state.set_status(task_id, task_state.FAILED)
+            emit(task_state.EV_ERROR, {"kind": "unknown", "query_id": st2.get("query_id"),
+                                       "reason": st2.get("reason", "")})
+            final("unknown")
+            return
+        # ── 还需继续澄清 ──
+        if outcome == "next_clarify":
+            config_store.clarify_save(st2)
+            clarif = (st2.get("pending_clarifications") or [None])[0]
+            task_state.set_clarification(task_id, clarif, st2["query_id"])
+            task_state.set_status(task_id, task_state.WAITING_CLARIFICATION)
+            emit(task_state.EV_CLARIFICATION_UPDATED, {
+                "query_id": st2["query_id"],
+                "reason": st2.get("reason", ""),
+                "clarification": clarif,
+            })
+            final("clarify")
+            return
+
+        # ── 已消歧 → 执行（复用现有 agent.ask，锁口径 + 重过全部安全闸门）──
+        final_q = clarification.build_final_question(st2)
+        override = clarification.build_understanding_override(st2)
+        result = agent.ask(index, final_q, user, understanding_override=override,
+                           want_answer=want_answer, events=emit,
+                           is_cancelled=lambda: task_state.is_cancelled(task_id))
+        if (result or {}).get("cancelled"):
+            task_state.set_status(task_id, task_state.CANCELLED)
+            emit(task_state.EV_ERROR, {"cancelled": True,
+                                       "message": result.get("error") or "已取消"})
+            final("cancelled")
+            return
+        payload = _build_ask_payload(result, index)
+        st2["status"] = clarification.STATUS_SUCCESS if payload.get("ok") \
+            else clarification.STATUS_FAILED
+        st2["final_sql"] = payload.get("sql", "")
+        st2["execution_result"] = {
+            "ok": payload.get("ok"), "row_count": payload.get("row_count"),
+            "error": payload.get("error", ""),
+        }
+        st2["updated_at"] = clarification._now_iso()
+        config_store.clarify_save(st2)
+        payload["clarify"] = {
+            "kind": "done", "query_id": st2["query_id"],
+            "adopted": clarification.summarize(st2),
+        }
+        task_state.set_status(task_id, task_state.COMPLETED)
+        task_state.set_result(task_id, payload)
+        final("done", payload=payload, result=result)
+    except task_state.TaskCancelled as tc:
+        task_state.set_status(task_id, task_state.CANCELLED)
+        emit(task_state.EV_ERROR, {"cancelled": True, "message": str(tc)})
+        final("cancelled")
+    except Exception as e:
+        task_state.set_status(task_id, task_state.FAILED)
+        emit(task_state.EV_ERROR, {"message": f"{type(e).__name__}: {e}"})
+        final("error")
+
+
+@app.post("/api/ask/stream")
+async def api_ask_stream(body: AskStreamBody, request: Request):
+    """SSE 流式问数：全新问题 → 澄清决策 → 直接执行，各阶段实时推送。
+
+    与 /api/ask 的差异：把「一次性等结果」改成「边执行边推事件」；
+    澄清 / 直接执行 / 落库收口 复用同一套逻辑（不新建流水线）。
+    """
+    _ensure_db()
+    question = body.question.strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="问题不能为空")
+
+    index = get_index()                                # 主线程建索引（避免线程内重建）
+    user = getattr(request.state, "user", None) or {}
+    session_token = _bearer_token(request) or ""
+    task_id = secrets.token_urlsafe(12)                # 任务 id：全流程唯一锚点
+    task_state.new_task(task_id, user.get("username", ""), question)
+
+    q = asyncio.Queue()                                # 事件队列（跨线程桥接）
+    loop = asyncio.get_running_loop()
+    threading.Thread(
+        target=_ask_stream_worker,
+        args=(loop, q, task_id, index, user, session_token, question, body.want_answer),
+        daemon=True,
+    ).start()
+
+    return StreamingResponse(
+        _sse_stream(task_id, q, request),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+                 "Connection": "keep-alive"},
+    )
+
+
+@app.post("/api/clarify/answer/stream")
+async def api_clarify_answer_stream(body: ClarifyAnswerStreamBody, request: Request):
+    """SSE 流式：提交澄清回答后，恢复原任务继续执行（不重建无上下文任务）。
+
+    通过 task_id 关联同一任务；不传 task_id 时新建任务（兼容前端渐进接入）。
+    """
+    _ensure_db()
+    user = getattr(request.state, "user", None) or {}
+    username = user.get("username", "")
+    st = config_store.clarify_load(body.query_id, username)
+    if not st:
+        raise HTTPException(status_code=404, detail="澄清会话不存在或不属于当前用户")
+
+    index = get_index()
+    task_id = body.task_id or secrets.token_urlsafe(12)
+    if not task_state.get(task_id):
+        task_state.new_task(task_id, username, st.get("original_question", ""))
+
+    q = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+    threading.Thread(
+        target=_answer_stream_worker,
+        args=(loop, q, task_id, index, user, st, body.answer, body.want_answer),
+        daemon=True,
+    ).start()
+
+    return StreamingResponse(
+        _sse_stream(task_id, q, request),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+                 "Connection": "keep-alive"},
+    )
+
+
+@app.get("/api/task/{task_id}")
+async def api_task_get(task_id: str, request: Request):
+    """读任务状态与结果（断线重连 / 刷新恢复用）。只回自己归属的任务。"""
+    user = getattr(request.state, "user", None) or {}
+    t = task_state.get(task_id)
+    if not t:
+        raise HTTPException(status_code=404, detail="任务不存在或已过期")
+    if t.get("username") and t["username"] != user.get("username", ""):
+        raise HTTPException(status_code=404, detail="任务不存在或不属于当前用户")
+    return t
+
+
+@app.post("/api/task/{task_id}/cancel")
+async def api_task_cancel(task_id: str, request: Request):
+    """用户主动取消：置取消信号，工作线程会在执行 SQL 前停下。"""
+    user = getattr(request.state, "user", None) or {}
+    t = task_state.get(task_id)
+    if not t or (t.get("username") and t["username"] != user.get("username", "")):
+        raise HTTPException(status_code=404, detail="任务不存在或不属于当前用户")
+    task_state.request_cancel(task_id)
+    task_state.set_status(task_id, task_state.CANCELLED)
+    return {"task_id": task_id, "status": task_state.CANCELLED}
 
 
 # ═══════════════════════════════════════════════════════════
@@ -897,13 +1759,17 @@ def api_upsert_metric(name: str, body: MetricBody):
       想改开放状态请用下面的 /api/metrics/{name}/enabled 接口。
       两件事分开，避免"改个口径把停用过的指标无声地打开了"。
     """
-    config_store.upsert_metric({
+    m = {
         "name": name,
         "keywords": body.keywords,
         "definition": body.definition,
         "doc": body.doc,
         "tables": body.tables,
-    })
+    }
+    # ★ OSSIE 标准表达式：显式传入才保存（None=不处理，避免误清空）
+    if body.expression is not None:
+        m["expression"] = body.expression
+    config_store.upsert_metric(m)
     return {"ok": True, "name": name, "message": "已保存。★ 点『重建索引』后生效"}
 
 
@@ -1292,6 +2158,7 @@ def api_kb_table_detail(name: str):
     src_c = config_store.get_table_comment_sources()
     col_c = config_store.get_column_comments(name)
     col_s = config_store.get_column_comment_sources()   # {表.字段: manual|ai}
+    dim_c = config_store.get_column_dimension_types(name)  # ★ 字段维度类型 {表.字段: type}
     db_c = db.fetch_comments([name])                 # ★ 只抓这一张表的库自带注释
     db_col_c = db_c.get("columns", {})
 
@@ -1305,15 +2172,16 @@ def api_kb_table_detail(name: str):
         key = f"{name}.{col}"
         manual = col_c.get(key, "")
         from_db = db_col_c.get(key, "")
-        #   ★ column_comments 里现在可能装着 AI 生成的结果，
-        #     直接标 manual 会让用户分不清哪些自己核实过 —— 按 source 列如实标。
         src = (col_s.get(key) or "") if manual else ("db" if from_db else "")
+        dim_type = dim_c.get(key, "")            # 人工指定的维度类型（空 = 自动识别）
         columns.append({
             "column": col,
             "type": dtype,
             "comment": manual or from_db,            # 展示用：人工/AI 优先于库自带
             "comment_source": src,
             "db_comment": from_db,                   # 数据库自带的那份（字段层仍作"基本注释"参考）
+            "dimension_type": dim_type,              # ★ 人工指定的维度类型（空=自动）
+            "dimension": dim_type or semantic_object_builder.detect_dimension(col, dtype),  # ★ 生效维度（人工优先）
         })
 
     return {
@@ -1328,6 +2196,42 @@ def api_kb_table_detail(name: str):
         "column_count": len(columns),
         "commented_count": sum(1 for c in columns if c["comment"]),
     }
+
+
+@app.get("/api/kb/governance/pending")
+def api_kb_gov_pending():
+    """
+    待复核知识清单 —— 页面「知识治理」页的复核队列
+
+    ★ 为什么单独开一个接口，而不是在各知识列表里加 status 字段？
+      列表接口（表结构 / 语义注册表）是按"表"和"实体"组织的，各有各的返回结构；
+      复核队列是**跨层**的（指标 / 实体 / 表注释 / 字段注释 / 字典 / 关系 / 文档），
+      硬塞进任何一个列表都会把那个接口的形状搞乱。单独一条线更清楚。
+    """
+    items = config_store.list_pending_knowledge()
+    return {"ok": True, "count": len(items), "items": items,
+            "summary": config_store.knowledge_status_summary()}
+
+
+@app.post("/api/kb/governance/action")
+def api_kb_gov_action(body: GovActionBody):
+    """
+    通过 / 拒绝 / 退回 一条待复核知识
+
+    ★ 状态落地必须走后端统一函数（config_store.set_knowledge_status）：
+      它同时写 approved_at/approved_by、knowledge_history 和 audit_log。
+      页面上直接改表的话，审计链会断（谁批的、什么时候批的查不到）。
+    """
+    mapping = {"approve": "approved", "reject": "rejected", "candidate": "candidate"}
+    st = mapping.get((body.action or "").strip().lower())
+    if not st:
+        raise HTTPException(status_code=400, detail="action 只能是 approve / reject / candidate")
+    ok, msg = config_store.set_knowledge_status(body.layer, body.key, st)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    _clear_gaps_cache()             # 知识状态变了 → 缺口缓存作废
+    return {"ok": True, "layer": body.layer, "key": body.key, "status": st,
+            "message": msg + "　★ 点『重建索引』后生效"}
 
 
 @app.put("/api/kb/table/{name}")
@@ -1557,6 +2461,9 @@ def api_kb_set_column_comment(table: str, column: str, body: KbCommentBody):
     模型就不会再把"完单量"写成 status=7。
     """
     config_store.set_column_comment(table, column, body.comment)
+    # ★ 维度类型：若显式传入则一并保存（空串 = 清除，回到自动识别）
+    if body.dimension_type is not None:
+        config_store.set_column_dimension_type(table, column, body.dimension_type)
     _clear_gaps_cache()            # ★ 补完这条注释，缺口清单里就该少一条
     return {"ok": True, "table": table, "column": column,
             "message": "已保存。★ 点『重建索引』后生效"}
@@ -1751,6 +2658,7 @@ def api_kb_upsert_entity(name: str, body: EntityBody):
     config_store.upsert_entity({
         "name": name, "table_name": body.table_name, "grain": body.grain,
         "comment": body.comment, "keywords": body.keywords,
+        "primary_key": body.primary_key,
         "enabled": body.enabled,
     }, source="manual")
     # ★ 编辑改名：先把新名写进去，再删旧名 —— 顺序不能反，
@@ -1785,6 +2693,7 @@ def api_kb_upsert_relationship(body: RelationshipBody):
         "join_sql": body.join_sql, "join_type": body.join_type,
         "cardinality": body.cardinality, "pre_agg_required": body.pre_agg_required,
         "rule_note": body.rule_note, "enabled": body.enabled,
+        "from_columns": body.from_columns, "to_columns": body.to_columns,
     })
     # ★ 编辑时若改了「左右实体」，新写入的是一个【新行】，原 id 那行会残留 → 清理掉。
     #   ★ 绝不能无条件删除：若左右没变，upsert 是【原地更新同一行】，
@@ -2011,13 +2920,28 @@ def api_kb_priorities():
                    "text": text or "（无 JOIN SQL）",
                    "meta": {"type": "Join规则", "属性": parts}})
 
-    # ── P3 表字段 Schema（表注释 + 字段注释）──
+    # ── P3 表字段 Schema（表结构本体 + 表注释 + 字段注释）──
     p3 = []
+    #   ★ 表结构本体：可见业务表清单（表名 + 字段数）。
+    #     Schema 是 P3 的核心，以前这里只有"注释"，表/字段清单本身没显式列出，
+    #     导致 P3 层看着像"缺一层"（审计 03："P3 未显式建模"）。
+    #     用 list_column_stats（每表一行，秒级）拿字段数；不能用 fetch_schema 全量拉
+    #     （上万行明细在 SSH 隧道下要几十秒，见 /api/kb/overview 的性能注释）。
+    try:
+        names = _kb_business_tables()
+        visible = config_store.filter_visible_tables(set(names), config.ACL_DEFAULT_VISIBLE)
+        stats = db.list_column_stats()          # {表名: {total, db_commented}}
+        for t in sorted(visible):
+            total = stats.get(t, {}).get("total", 0)
+            p3.append({"title": "表：" + t, "text": f"字段 {total} 个",
+                       "meta": {"type": "表结构"}})
+    except Exception:
+        pass                                    # 表清单拉取失败不挡总览
     for t, c in config_store.get_table_comments().items():
-        p3.append({"title": "表：" + t, "text": c or "（无注释）",
+        p3.append({"title": "表注释：" + t, "text": c or "（无注释）",
                    "meta": {"type": "表注释"}})
     for key, c in config_store.get_column_comments().items():
-        p3.append({"title": "字段：" + key, "text": c or "（无注释）",
+        p3.append({"title": "字段注释：" + key, "text": c or "（无注释）",
                    "meta": {"type": "字段注释"}})
 
     # ── P4 普通业务文档（仅供参考）──
@@ -2046,7 +2970,10 @@ def api_kb_priorities():
          "desc": "仅作补充上下文，仅供参考，不得覆盖 P0~P2。", "items": p4},
     ]
     return {"tiers": tiers,
-            "counts": {f"p{t['tier']}": len(t["items"]) for t in tiers}}
+            "counts": {f"p{t['tier']}": len(t["items"]) for t in tiers},
+            # ★ 来自 knowledge_level 字段的分层计数（与上面 items 长度互补：
+            #   items 是"能展示出内容的"，levels 是"数据库里落库的"权威分层）
+            "levels": config_store.get_knowledge_level_counts()}
 
 
 # ═══════════════════════════════════════════════════════════
@@ -2284,6 +3211,54 @@ def api_suggest_apply(body: SuggestApplyBody):
 class ReviewBody(BaseModel):
     status: str                            # approved / rejected
     note: str = ""                         # 审核意见（建议写清口径对不对）
+    confirm_reason: str = ""               # ★ L4 确认分类（8 类，见 CONFIRM_REASONS）
+
+
+# ── ★ SQL 经验中心 ──
+class ExpReviewBody(BaseModel):
+    status: str = ""                       # approved / rejected / none
+    note: str = ""
+
+
+class ExpVerifyBody(BaseModel):
+    status: str = ""                       # manual_confirmed / result_verified / verify_failed / unverified
+    note: str = ""                         # 验证依据（人工确认写清"跟谁核对的、核对了什么"）
+    method: str = "manual"
+
+
+class ExpPromoteBody(BaseModel):
+    target: str = ""                       # golden_candidate / golden / revoked
+    note: str = ""
+
+
+class ExpUpdateBody(BaseModel):
+    fields: dict = {}                      # 失败类型 / 根因 / 适用条件 / 修正说明 …
+
+
+class ExpCorrectionBody(BaseModel):
+    sql: str = ""                          # 修正后的 SQL
+    note: str = ""                         # 修正说明
+    root_cause: str = ""                   # 已知根因（写了等于确认根因）
+    failure_type: str = ""                 # 失败类型（不传则沿用原值）
+
+
+class ExpImportBody(BaseModel):
+    feedbacks: bool = True                 # 是否顺带导入用户反馈
+    limit: int | None = None
+
+
+class ExpMineBody(BaseModel):
+    topic: str = ""
+    dry_run: bool = False
+
+
+class ExpRulePublishBody(BaseModel):
+    note: str = ""
+    force: bool = False
+
+
+class ExpRuleRevokeBody(BaseModel):
+    reason: str = ""
 
 
 def _current_user(request: Request):
@@ -2596,12 +3571,625 @@ def api_do_review(rid: int, body: ReviewBody, request: Request):
         raise HTTPException(status_code=400,
                             detail="判定「不通过」时必须写清原因，否则用户不知道该改什么")
     try:
-        rec = config_store.review_record(rid, user.get("username"), body.status, body.note)
+        rec = config_store.review_record(rid, user.get("username"), body.status,
+                                         body.note, body.confirm_reason)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"ok": True, "record": rec,
             "message": "审核已通过，用户端状态实时更新" if body.status == "approved"
                        else "已驳回，请按意见修正知识库后让用户重新取数"}
+
+
+# ═══════════════════════════════════════════════════════════
+# ⑦-b ★ SQL 经验中心（成功案例 / 失败经验 / 修正对照 / 归纳规则）
+#
+#   设计要点（与任务书验收标准一一对应）：
+#     · 审核状态与结果验证状态是两组独立接口 —— 页面上也分成两个按钮，
+#       避免"点了通过就等于数对了"这种误解；
+#     · 升黄金候选/发布黄金 SQL 由后端硬校验（sql_experience.promote_case），
+#       不满足条件直接 400，页面绕不过去；
+#     · 所有动作都写 knowledge_history + audit_log。
+# ═══════════════════════════════════════════════════════════
+@app.get("/api/exp/overview")
+def api_exp_overview():
+    import sql_experience
+    ov = sql_experience.overview()
+    ov["status_zh"] = {
+        "kind": sql_experience.KIND_ZH,
+        "trust": sql_experience.TRUST_ZH,
+        "verify": sql_experience.VERIFY_STATUS_ZH,
+        "rule": sql_experience.RULE_STATUS_ZH,
+        "failure": sql_experience.FAILURE_TYPES,
+        "rule_layer": sql_experience.RULE_LAYERS,
+    }
+    ov["flags"] = {
+        "enabled": config.EXP_ENABLED,
+        "success_recall": config.EXP_SUCCESS_RECALL,
+        "fail_prevent": config.EXP_FAIL_PREVENT,
+        "fail_repair": config.EXP_FAIL_REPAIR,
+        "rules": config.EXP_RULES,
+        "exact_reuse": config.EXP_EXACT_REUSE,
+    }
+    return ov
+
+
+@app.get("/api/exp/cases")
+def api_exp_cases(kind: str = "", review: str = "", verify: str = "", trust: str = "",
+                  status: str = "", failure_type: str = "", q: str = "",
+                  limit: int = 100, offset: int = 0):
+    """案例列表（成功/失败/修正共用；用 kind 区分）"""
+    import sql_experience
+    data = sql_experience.list_cases(
+        kind=kind or None, review=review or None, verify=verify or None,
+        trust=trust or None, status=status or None,
+        failure_type=failure_type or None, q=q or None,
+        limit=max(1, min(limit, 500)), offset=max(0, offset))
+    for it in data["items"]:
+        it["sql_formatted"] = guard.format_sql(it.get("sql_raw") or "")
+    return data
+
+
+@app.get("/api/exp/cases/{cid}")
+def api_exp_case(cid: int):
+    import sql_experience
+    case = sql_experience.get_case(cid)
+    if not case:
+        raise HTTPException(status_code=404, detail=f"案例不存在：{cid}")
+    case["sql_formatted"] = guard.format_sql(case.get("sql_raw") or "")
+    case["corrected_formatted"] = guard.format_sql(case.get("corrected_sql") or "")
+    # 关联原始取数记录（可回溯到当时的执行结果快照）
+    src = None
+    if case.get("source_type") == "query_record" and case.get("source_id"):
+        try:
+            src = config_store.get_query_record(int(case["source_id"]))
+        except Exception:
+            src = None
+    case["source_record"] = ({"id": src["id"], "created_at": src["created_at"],
+                              "review_status": src["review_status"],
+                              "result_preview": src.get("result_preview", "")[:600],
+                              "row_count": src.get("row_count")} if src else None)
+    return case
+
+
+@app.put("/api/exp/cases/{cid}")
+def api_exp_update_case(cid: int, body: ExpUpdateBody, request: Request):
+    """补/改人工信息（失败类型、根因、适用条件、修正说明…）"""
+    import sql_experience
+    user = _current_user(request)
+    ok, msg = sql_experience.update_case(cid, body.fields, operator=user.get("username", ""))
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"ok": True, "message": msg}
+
+
+@app.post("/api/exp/cases/{cid}/review")
+def api_exp_review(cid: int, body: ExpReviewBody, request: Request):
+    """分类审核（改 review_status，**不动** verify_status）"""
+    import sql_experience
+    user = _current_user(request)
+    ok, msg = sql_experience.set_case_review(cid, body.status,
+                                             user.get("username", ""), body.note)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"ok": True, "message": msg}
+
+
+@app.post("/api/exp/cases/{cid}/verify")
+def api_exp_verify(cid: int, body: ExpVerifyBody, request: Request):
+    """人工记录结果验证结论（必须写明依据）"""
+    import sql_experience
+    user = _current_user(request)
+    if body.status in ("manual_confirmed", "result_verified") and not body.note.strip():
+        raise HTTPException(status_code=400,
+                            detail="人工确认结果必须填写依据（跟谁核对、核对了什么）")
+    ok, msg = sql_experience.set_case_verify(
+        cid, body.status, method=body.method or "manual",
+        evidence={"summary": body.note, "by": user.get("username", ""), "at": config_store._now()},
+        operator=user.get("username", ""))
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"ok": True, "message": msg}
+
+
+@app.post("/api/exp/cases/{cid}/reexec")
+def api_exp_reexec(cid: int, request: Request):
+    """机器重跑验证：只读 + 白名单 + 唯一执行出口，最高只得 reexec_ok"""
+    import sql_experience
+    user = _current_user(request)
+    index = get_index()
+    ok, msg, ev = sql_experience.verify_by_reexec(
+        cid, index.get("allowed_tables") or [], operator=user.get("username", ""))
+    if not ok:
+        raise HTTPException(status_code=400, detail=f"{msg}（已记录为验证不通过）")
+    return {"ok": True, "message": msg, "evidence": ev}
+
+
+@app.post("/api/exp/cases/{cid}/promote")
+def api_exp_promote(cid: int, body: ExpPromoteBody, request: Request):
+    """提交黄金候选 / 发布正式黄金 SQL / 撤销"""
+    import sql_experience
+    user = _current_user(request)
+    ok, msg = sql_experience.promote_case(cid, body.target,
+                                          user.get("username", ""), body.note)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"ok": True, "message": msg}
+
+
+@app.post("/api/exp/cases/{cid}/correction")
+def api_exp_correction(cid: int, body: ExpCorrectionBody, request: Request):
+    """给失败案例挂「修正 SQL」，自动生成一条修正对照案例"""
+    import sql_experience
+    user = _current_user(request)
+    ok, msg, new_id = sql_experience.attach_correction(
+        cid, body.sql, note=body.note, operator=user.get("username", ""),
+        root_cause=body.root_cause, failure_type=body.failure_type or None)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"ok": True, "message": msg, "correction_case_id": new_id}
+
+
+@app.post("/api/exp/import")
+def api_exp_import(body: ExpImportBody, request: Request):
+    """批量导入存量取数记录（★ 保留原始状态，绝不自动标记为已验证）"""
+    import sql_experience
+    user = _current_user(request)
+    stats = sql_experience.import_from_records(limit=body.limit,
+                                               operator=user.get("username", "") or "import")
+    out = {"ok": True, "records": stats, "message":
+           f"取数记录：新建 {stats['created']} / 更新 {stats['updated']}"}
+    if body.feedbacks:
+        fs = sql_experience.import_from_feedbacks(operator=user.get("username", "") or "import")
+        out["feedbacks"] = fs
+        out["message"] += f"；反馈：新建 {fs['created']} / 更新 {fs['updated']}"
+    return out
+
+
+@app.get("/api/exp/rules")
+def api_exp_rules(status: str = "", layer: str = "", limit: int = 200):
+    import sql_experience
+    items = sql_experience.list_rules(status=status or None, layer=layer or None, limit=limit)
+    for r in items:
+        r["template_formatted"] = guard.format_sql(r.get("template_sql") or "")
+        # 来源案例（页面要能点进去看原始案例 —— 这是"可追溯"的可见证据）
+        r["sources"] = []
+        for cid in (r.get("source_case_ids") or [])[:20]:
+            c = sql_experience.get_case(cid)
+            if c:
+                r["sources"].append({"id": c["id"], "case_no": c["case_no"],
+                                     "question": c["question"], "trust": c["trust_level"]})
+    return {"items": items, "count": len(items)}
+
+
+@app.post("/api/exp/mine")
+def api_exp_mine(body: ExpMineBody, request: Request):
+    """AI 归纳候选规则（★ 只产出 candidate/draft，绝不自动发布）"""
+    import sql_experience
+    user = _current_user(request)
+    try:
+        res = sql_experience.mine_rules(topic=body.topic or None, dry_run=body.dry_run,
+                                        operator=user.get("username", "") or "ai")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"归纳失败：{e}")
+    return {"ok": True, "results": res, "count": len(res),
+            "message": "已生成候选规则，需人工确认后发布" if not body.dry_run
+                       else "已完成可归纳性检查（未生成）"}
+
+
+@app.post("/api/exp/rules/{rid}/publish")
+def api_exp_rule_publish(rid: int, body: ExpRulePublishBody, request: Request):
+    import sql_experience
+    user = _current_user(request)
+    ok, msg = sql_experience.publish_rule(rid, user.get("username", ""),
+                                          body.note, force=body.force)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"ok": True, "message": msg}
+
+
+@app.post("/api/exp/rules/{rid}/revoke")
+def api_exp_rule_revoke(rid: int, body: ExpRuleRevokeBody, request: Request):
+    import sql_experience
+    user = _current_user(request)
+    ok, msg = sql_experience.revoke_rule(rid, body.reason, user.get("username", ""))
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"ok": True, "message": msg}
+
+
+@app.get("/api/exp/usage")
+def api_exp_usage(event: str = "", limit: int = 100):
+    """经验召回/采用/放弃日志（排查误召回、统计命中率）"""
+    import sql_experience
+    return {"items": sql_experience.list_usage(event=event or None, limit=limit)}
+
+
+@app.get("/api/exp/affected")
+def api_exp_affected(table: str = "", metric: str = ""):
+    """表结构/指标口径变化时，找出可能受影响的案例（只提示，不自动改状态）"""
+    import sql_experience
+    items = sql_experience.affected_cases(table=table or None, metric=metric or None)
+    return {"items": items, "count": len(items)}
+
+
+# ═══════════════════════════════════════════════════════════
+# ⑦-a ★ 标准问题集（P0-1 Expected SQL / Expected Result 评测体系）
+#   默认走 admin 中间件（_required_role 默认 admin），无需额外鉴权。
+# ═══════════════════════════════════════════════════════════
+@app.get("/api/golden/cases")
+def api_golden_list(status: str = "", review: str = "", business_line: str = "",
+                    limit: int = 500):
+    """标准问题集列表"""
+    import golden_cases
+    items = golden_cases.list_cases(status=status or None, review=review or None,
+                                    business_line=business_line or None,
+                                    limit=max(1, min(limit, 1000)))
+    return {"items": items, "count": len(items)}
+
+
+@app.post("/api/golden/cases")
+def api_golden_create(body: dict, request: Request):
+    """新增标准问题（expected_sql 自动过安全验证）"""
+    import golden_cases
+    user = _current_user(request)
+    r = golden_cases.create_case(body, operator=user.get("username", ""))
+    if not r["ok"]:
+        raise HTTPException(status_code=400, detail=r.get("msg", "创建失败"))
+    return r
+
+
+@app.get("/api/golden/cases/{cid}")
+def api_golden_get(cid: str):
+    import golden_cases
+    case = golden_cases.get_case(cid)
+    if not case:
+        raise HTTPException(status_code=404, detail=f"案例不存在：{cid}")
+    case["versions"] = golden_cases.list_versions(cid)
+    case["verify_log"] = golden_cases.list_verify_log(cid)
+    return case
+
+
+@app.put("/api/golden/cases/{cid}")
+def api_golden_update(cid: str, body: dict, request: Request):
+    """编辑（改 expected_sql 会重新验证并 +1 版本）"""
+    import golden_cases
+    user = _current_user(request)
+    r = golden_cases.update_case(cid, body, operator=user.get("username", ""))
+    if not r["ok"]:
+        raise HTTPException(status_code=400, detail=r.get("msg", "更新失败"))
+    return r
+
+
+@app.post("/api/golden/cases/{cid}/review")
+def api_golden_review(cid: str, body: dict, request: Request):
+    """审核（approve 前强制再验一次 expected_sql）"""
+    import golden_cases
+    user = _current_user(request)
+    r = golden_cases.set_review(cid, body.get("status", "pending"),
+                                reviewer=user.get("username", ""),
+                                note=body.get("note", ""))
+    if not r["ok"]:
+        raise HTTPException(status_code=400, detail=r.get("msg", "审核失败"))
+    return r
+
+
+@app.post("/api/golden/cases/{cid}/verify")
+def api_golden_verify(cid: str, body: dict, request: Request):
+    """验证状态（独立于审核）"""
+    import golden_cases
+    user = _current_user(request)
+    return golden_cases.verify_case(cid, body.get("verify_status", "verified"),
+                                    operator=user.get("username", ""))
+
+
+@app.post("/api/golden/cases/{cid}/archive")
+def api_golden_archive(cid: str, body: dict, request: Request):
+    """停用/归档（不物理删除）"""
+    import golden_cases
+    user = _current_user(request)
+    return golden_cases.archive_case(cid, body.get("status", "archived"),
+                                     operator=user.get("username", ""),
+                                     note=body.get("note", ""))
+
+
+@app.post("/api/golden/cases/{cid}/compare")
+def api_golden_compare(cid: str, body: dict):
+    """结果对比：把实际结果喂进来，与 expected_result 逐格对比并定位差异"""
+    import golden_cases
+    from evaluation import result_compare
+    case = golden_cases.get_case(cid)
+    if not case:
+        raise HTTPException(status_code=404, detail=f"案例不存在：{cid}")
+    actual = body.get("rows")
+    expected = case.get("expected_result")
+    if expected is None:
+        raise HTTPException(status_code=400, detail="该案例未配置 expected_result")
+    return result_compare.compare(actual, expected)
+
+
+@app.post("/api/golden/import")
+def api_golden_import(body: dict, request: Request):
+    """批量导入（items 列表，逐条校验、失败汇总）"""
+    import golden_cases
+    user = _current_user(request)
+    items = body.get("items") or []
+    return golden_cases.import_cases(items, operator=user.get("username", ""),
+                                     source=body.get("source", "import"))
+
+
+@app.get("/api/golden/overview")
+def api_golden_overview():
+    import golden_cases
+    return golden_cases.overview()
+
+
+# ═══════════════════════════════════════════════════════════
+# ⑦-b ★ P0 核心指标看板（P0-5）
+# ═══════════════════════════════════════════════════════════
+@app.get("/api/dashboard/p0")
+def api_dashboard_p0():
+    """P0 核心指标聚合：业务结果 / SQL 质量 / 知识质量 / AI 评测"""
+    import golden_cases
+    import sql_experience
+    gc = golden_cases.overview()
+    exp = sql_experience.overview()
+
+    # ── SQL 质量（query_records 聚合）──
+    sqlq = config_store.dashboard_sql_quality()
+
+    # ── 反馈 ──
+    feedback = config_store.dashboard_feedback()
+
+    # ── AI 评测：读最新评测报告（无则标注未运行）──
+    ai = _latest_eval_summary()
+
+    _trust = exp.get("by_trust") or {}
+    _rules = exp.get("by_rule_status") or {}
+    # 待审核规则 = candidate + draft（draft 通常是「存在冲突待处理」）
+    _pending = _rules.get("candidate", 0) + _rules.get("draft", 0)
+    _recall = exp.get("recall_total", 0)
+    _reuse = exp.get("reuse_total", 0)
+
+    return {
+        "business": {
+            "golden_total": gc["total"],
+            "golden_approved": gc["approved"],
+            "golden_verified": gc["verified"],
+            "golden_unverified": gc["unverified"],
+            "with_expected_result": gc["with_expected_result"],
+            "business_verified_rate": _pct(gc["verified"], gc["total"]),
+        },
+        "sql": sqlq,
+        "knowledge": {
+            "golden_sql_count": _trust.get("golden", 0),
+            "golden_candidate_count": _trust.get("golden_candidate", 0),
+            "candidate_count": _trust.get("candidate", 0),
+            "reuse_total": _reuse,
+            "recall_total": _recall,
+            "reuse_rate": _pct(_reuse, _recall),
+            "pending_rules": _pending,
+            "conflict_rules": _rules.get("draft", 0),
+            "rules_total": exp.get("rules_total", 0),
+        },
+        "feedback": feedback,
+        "evaluation": ai,
+        # ★ 聚合时间：看板每个指标都标注「数据更新时间」，避免用户误以为是历史快照
+        "updated_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+    }
+
+
+def _pct(num, den):
+    return round(num / den, 4) if den else None
+
+
+def _latest_eval_summary():
+    """读取 evaluation/reports 里最新一份 *.md 报告的头部指标（轻量，不重跑评测）。"""
+    import glob
+    import os
+    here = os.path.dirname(os.path.abspath(__file__))
+    reports = sorted(glob.glob(os.path.join(here, "evaluation", "reports", "*.md")),
+                     key=os.path.getmtime, reverse=True)
+    if not reports:
+        return {"status": "未运行", "baseline": None, "metrics": {}}
+    latest = reports[0]
+    metrics = {}
+    try:
+        with open(latest, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("|") and "%" in line:
+                    parts = [p.strip() for p in line.strip("|").split("|")]
+                    if len(parts) >= 2:
+                        metrics[parts[0]] = parts[1]
+    except Exception:
+        pass
+    return {"status": "有报告", "latest_report": os.path.basename(latest),
+            "report_count": len(reports), "metrics": metrics}
+
+
+# ═══════════════════════════════════════════════════════════
+# ⑦-c ★ 评测报告结构化读取（评测看板「AI 评测质量 / 错误归因」数据源）
+#   只读 evaluation/reports/*.json，不重跑评测、不虚构任何数字。
+#   ★ 为什么要新增这一层？原来的 _latest_eval_summary 是从 *.md 里
+#     "反解析"英文指标名（脆弱、且把英文 key 直接暴露给前端）；
+#     这里改为直读结构化 JSON，并在服务端完成「中文指标名 + 口径解释」
+#     与「评分维度 → 12 类统一错误分类」两层映射，前端零判断、零英文残留。
+# ═══════════════════════════════════════════════════════════
+
+# ── ① 评测指标中文映射：key → (中文名, 口径解释, 分组, 类型) ──
+#   type：ratio=比率(前端乘100显示%) / sec=秒 / num=数值
+EVAL_METRIC_ZH = {
+    "overall_accuracy":           ("综合准确率", "全部用例在各评测维度（意图/指标/表/SQL/时间/知识依据）上的整体正确率", "核心准确率", "ratio"),
+    "intent_accuracy":            ("意图识别准确率", "正确识别用户查询意图（要做什么）的用例占比", "核心准确率", "ratio"),
+    "metric_accuracy":            ("指标识别准确率", "正确识别所需业务指标、且未遗漏/未多算的用例占比", "核心准确率", "ratio"),
+    "sql_accuracy":               ("SQL正确率", "生成的 SQL 在语义上符合预期的用例占比", "核心准确率", "ratio"),
+    "time_accuracy":              ("时间识别准确率", "正确识别时间范围与时间口径的用例占比", "核心准确率", "ratio"),
+    "table_retrieval_recall":     ("数据表召回率", "正确召回所需数据表的用例占比", "检索与知识依据", "ratio"),
+    "field_retrieval_recall":     ("字段召回率", "正确召回所需字段的用例占比", "检索与知识依据", "ratio"),
+    "grounding_accuracy":         ("知识依据准确率", "SQL 引用的表/字段均有知识依据（不凭空编造）的用例占比", "检索与知识依据", "ratio"),
+    "hallucination_rate":         ("幻觉率", "出现表/字段/口径幻觉的用例占比（越低越好）", "检索与知识依据", "ratio"),
+    "sql_execution_success_rate": ("SQL执行成功率", "生成的 SQL 能成功执行的用例占比", "执行与结果", "ratio"),
+    "result_accuracy":            ("结果准确率", "执行结果与预期结果一致的用例占比", "执行与结果", "ratio"),
+    "abstention_accuracy":        ("拒答准确率", "该拒答时正确拒答、不该拒答时不误拒的准确率", "执行与结果", "ratio"),
+    "consistency_rate":           ("一致性", "相同输入重复运行结果一致的比例", "执行与结果", "ratio"),
+    "p50_latency":                ("P50 延迟", "50% 用例的响应耗时（秒）", "性能开销", "sec"),
+    "p95_latency":                ("P95 延迟", "95% 用例的响应耗时（秒）", "性能开销", "sec"),
+    "avg_latency":                ("平均延迟", "平均响应耗时（秒）", "性能开销", "sec"),
+    "average_token":              ("平均 Token", "平均每次调用消耗的 token 数", "性能开销", "num"),
+    "average_cost":               ("平均成本", "平均每次调用成本", "性能开销", "num"),
+}
+
+# ── ② 评分维度 → 12 类统一错误分类（任务书 §4.5）──
+#   逐题 scores 里的维度是内部键（ok/time/metrics/...），
+#   这里把它们归并到统一的 12 类业务错误分类，供看板做归因统计。
+EVAL_DIM_CATEGORY = {
+    "intent":           "intent_error",          # 意图识别错误
+    "metrics":          "metric_error",          # 指标识别错误
+    "forbidden":        "metric_error",          # 多算/禁用指标 → 指标识别错误
+    "tables":           "table_error",           # 数据表选择错误
+    "sql_contains":     "sql_syntax_error",      # SQL 内容不符 → SQL 语法/内容错误
+    "sql_not_contains": "sql_syntax_error",      # 同上
+    "time":             "time_error",            # 时间范围错误
+    "result":           "business_result_error", # 业务结果错误
+    "grounding":        "knowledge_recall_error",# 知识召回错误
+    "hallucination":    "knowledge_recall_error",# 幻觉 → 知识召回错误
+    "abstain":          "intent_error",          # 该不该拒答 → 意图识别错误
+    "format":           "other",                 # 其他问题
+    "ok":               "sql_exec_error",        # 执行失败 → SQL执行失败
+}
+
+# ── ③ 12 类统一错误分类（顺序固定，含当前无数据来源的维度）──
+EVAL_CATEGORY_ZH = [
+    ("intent_error",          "意图识别错误"),
+    ("metric_error",          "指标识别错误"),
+    ("table_error",           "数据表选择错误"),
+    ("field_error",           "字段选择错误"),
+    ("join_error",            "JOIN关系错误"),
+    ("sql_syntax_error",      "SQL语法错误"),
+    ("sql_exec_error",        "SQL执行失败"),
+    ("business_result_error", "业务结果错误"),
+    ("time_error",            "时间范围错误"),
+    ("knowledge_recall_error","知识召回错误"),
+    ("permission_error",      "权限问题"),
+    ("other",                 "其他问题"),
+]
+
+
+def _latest_eval_full():
+    """结构化读取最新一份 evaluation/reports/*.json。
+
+    返回：
+      status / report_count / tag / generated_at / dataset /
+      sample_count / executed_count /
+      metrics   —— [{key,name(中文),explain,group,kind,value}]（只含有中文映射的指标）
+      categories —— [{key,name(中文),count,pct}]（12 类统一错误分类，按 EVAL_CATEGORY_ZH 顺序）
+      failures  —— [{id,question,categories,dims,error,sql}]（失败用例明细，≤50 条）
+      baseline  —— 上一份报告的 {key: value} 指标快照（用于前后对比，无则 None）
+    无报告 / 读取失败时返回空态，不虚构数字。
+    """
+    import glob
+    import json as _json
+    from datetime import datetime
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    reports = sorted(glob.glob(os.path.join(here, "evaluation", "reports", "*.json")),
+                     key=os.path.getmtime, reverse=True)
+    empty = {"status": "未运行", "report_count": len(reports), "metrics": [],
+             "categories": [], "failures": [], "baseline": None}
+    if not reports:
+        return empty
+
+    latest = reports[0]
+    try:
+        with open(latest, encoding="utf-8") as f:
+            data = _json.load(f)
+    except Exception:
+        empty["status"] = "读取失败"
+        return empty
+
+    m = data.get("metrics") or {}
+
+    # 指标列表：只保留有中文映射的评测指标；值为 None 的保留 None（前端显示 N/A）
+    metrics = []
+    for key, (zh, explain, group, kind) in EVAL_METRIC_ZH.items():
+        if key in m:
+            metrics.append({"key": key, "name": zh, "explain": explain,
+                            "group": group, "kind": kind, "value": m[key]})
+
+    # 错误分类统计：遍历结果，逐条对 status=False 的维度累加分类计数
+    cat_count = {}
+    failures = []
+    for r in data.get("results") or []:
+        scores = r.get("scores") or {}
+        bad_dims = [dim for dim, s in scores.items() if isinstance(s, dict) and s.get("status") is False]
+        if not bad_dims:
+            continue
+        cats = set()
+        for dim in bad_dims:
+            cat = EVAL_DIM_CATEGORY.get(dim, "other")
+            cats.add(cat)
+            cat_count[cat] = cat_count.get(cat, 0) + 1
+        failures.append({
+            "id": r.get("id"),
+            "question": (r.get("question") or r.get("name") or "").strip(),
+            "categories": sorted(cats),
+            "dims": bad_dims,
+            "error": (r.get("error") or "")[:200],
+            "sql": (r.get("sql") or "")[:300],
+        })
+    total_cat = sum(cat_count.values()) or 1
+    categories = [{"key": k, "name": zh, "count": cat_count.get(k, 0),
+                   "pct": round(cat_count.get(k, 0) / total_cat, 4)}
+                  for k, zh in EVAL_CATEGORY_ZH]
+
+    # 上一份报告的指标快照（前后对比用）
+    baseline = None
+    if len(reports) >= 2:
+        try:
+            with open(reports[1], encoding="utf-8") as f:
+                bd = _json.load(f)
+            bm = bd.get("metrics") or {}
+            baseline = {k: bm.get(k) for k in EVAL_METRIC_ZH if k in bm}
+        except Exception:
+            baseline = None
+
+    return {
+        "status": "有报告",
+        "report_count": len(reports),
+        "tag": data.get("tag") or "",
+        "generated_at": data.get("generated_at") or "",
+        "dataset": data.get("dataset") or "",
+        "sample_count": m.get("sample_count"),
+        "executed_count": m.get("executed_count"),
+        "metrics": metrics,
+        "categories": categories,
+        "failures": failures[:50],
+        "baseline": baseline,
+    }
+
+
+@app.get("/api/dashboard/eval")
+def api_dashboard_eval():
+    """评测看板 · AI 评测质量 + 错误归因（结构化读取最新评测报告，只读不重跑）"""
+    return _latest_eval_full()
+
+
+@app.get("/api/dashboard/eval/report")
+def api_dashboard_eval_report():
+    """评测看板 · 返回最新评测报告的 Markdown 原文（供「查看评测报告」抽屉展示）"""
+    import glob
+    here = os.path.dirname(os.path.abspath(__file__))
+    reports = sorted(glob.glob(os.path.join(here, "evaluation", "reports", "*.md")),
+                     key=os.path.getmtime, reverse=True)
+    if not reports:
+        return {"status": "未运行", "filename": None, "markdown": ""}
+    latest = reports[0]
+    try:
+        with open(latest, encoding="utf-8") as f:
+            md = f.read()
+    except Exception:
+        return {"status": "读取失败", "filename": os.path.basename(latest), "markdown": ""}
+    return {"status": "有报告", "filename": os.path.basename(latest), "markdown": md}
 
 
 # ═══════════════════════════════════════════════════════════
@@ -2616,6 +4204,10 @@ def api_rebuild_index():
       改了指标定义/表注释/权限，向量和知识库都变了，必须重算。
     """
     index = rebuild_index()
+    # ★ 重建索引 = 知识/权限都可能变了 → 取数结果缓存必须整体失效。
+    #   知识指纹虽然也能感知变化，但它有 30 秒缓存窗口；
+    #   重建是一个明确的"我改了东西"信号，应当立即生效而不是等一下。
+    result_cache.clear("索引重建")
     return {
         "ok": True,
         "tables": len(index["tables"]),
@@ -2623,6 +4215,18 @@ def api_rebuild_index():
         "dicts": len(index.get("dicts") or []),
         "allowed_tables": index["allowed_tables"],
     }
+
+
+@app.get("/api/cache/stats")
+def api_cache_stats():
+    """取数结果缓存状态（运维看命中率，判断 TTL 设得合不合适）"""
+    return result_cache.stats()
+
+
+@app.post("/api/cache/clear")
+def api_cache_clear():
+    """手工清空取数结果缓存（对账、验证口径改动是否生效时用）"""
+    return {"ok": True, "cleared": result_cache.clear("管理员手工清空")}
 
 
 # ═══════════════════════════════════════════════════════════
@@ -2937,6 +4541,768 @@ def api_permission_upsert_row_rule(body: RowRuleBody, request: Request):
 @app.put("/api/users/{username}/attributes")
 def api_set_user_attributes(username: str, body: UserAttrsBody):
     return config_store.set_user_attributes(username, body.attributes or {})
+
+
+# ═══════════════════════════════════════════════════════════
+# ★ 语义模型管理 + Apache Ossie 标准导入导出（知识中心整合 · P1）
+#   定位：语义模型是「一个业务主题 = 一个模型」的容器，承载 dataset/metric/
+#   relationship 的内部 JSON 快照，支持 OSSIE 标准 YAML/JSON 的导入导出。
+#   权限：全部默认 admin（新增接口自动受保护），语义模型是管理员维护的资产。
+# ═══════════════════════════════════════════════════════════
+def _current_username(request: Request) -> str:
+    """取当前登录用户名（用于审计/日志的 operator）。
+
+    ★ 独立命名，绝不与上方的 _current_user（返回 dict）同名 ——
+      否则后定义会覆盖前者，让 api_history 等按 dict 用的地方拿到 str 而 500。
+    """
+    return (getattr(request.state, "user", None) or {}).get("username", "")
+
+
+def _model_to_ossie_doc(m: dict) -> dict:
+    """把 config_store 返回的语义模型 dict 组装成 OSSIE 文档。"""
+    return ossie_adapter.build_model(
+        m.get("name") or "",
+        description=m.get("description") or "",
+        datasets=m.get("datasets") or [],
+        metrics=m.get("metrics") or [],
+        relationships=m.get("relationships") or [],
+        model_extensions=m.get("model_extensions") or {},
+    )
+
+
+# ── 语义模型 CRUD ──
+@app.get("/api/semantic-models")
+def api_semantic_models(status: str = ""):
+    """列出语义模型（可选按状态过滤）。"""
+    return {"items": config_store.list_semantic_models(status or None)}
+
+
+@app.post("/api/semantic-models")
+def api_semantic_model_create(body: SemanticModelBody, request: Request):
+    """新建语义模型（默认 draft，需审核后才是正式资产）。"""
+    operator = _current_username(request)
+    try:
+        m = config_store.upsert_semantic_model({
+            "name": body.name, "description": body.description,
+            "datasets": body.datasets, "metrics": body.metrics,
+            "relationships": body.relationships, "model_extensions": body.model_extensions,
+            "status": body.status or "draft", "source": "manual",
+        }, operator=operator, note="手动创建")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, "model": m}
+
+
+# ── OSSIE 信息（版本号，供前端展示固定版本）──
+@app.get("/api/semantic-models/ossie/info")
+def api_ossie_info():
+    return {"version": ossie_adapter.OSSIE_VERSION,
+            "commit": ossie_adapter.SCHEMA_COMMIT}
+
+
+# ── OSSIE 导入预览（解析 + 校验 + 冲突识别，不写库）──
+@app.post("/api/semantic-models/ossie/preview")
+def api_ossie_preview(body: OssieImportBody):
+    """上传 YAML/JSON → 识别版本 → 校验 → 解析 → 冲突识别 → 返回预览（不落库）。"""
+    doc, err = ossie_adapter.parse_document(body.content)
+    if err:
+        raise HTTPException(status_code=400, detail=f"解析失败：{err}")
+    if not isinstance(doc, dict):
+        raise HTTPException(status_code=400, detail="文档根节点必须是对象")
+
+    version = ossie_adapter.detect_version(doc)
+    # ★ 版本不匹配：不硬拒绝（便于过渡），但必须明确提示，导入确认时再拦
+    version_ok = ossie_adapter.is_supported_version(doc)
+
+    ok, errors = ossie_adapter.validate_document(doc)
+    ref_ok, ref_issues = ossie_adapter.validate_references(doc)
+
+    internal = ossie_adapter.parse_model(doc)
+    # 现有对象名集合：现有语义模型名 + 指标名 + 实体名 + 关系名（用于冲突识别）
+    existing = set()
+    for m in config_store.list_semantic_models():
+        existing.add(m["name"])
+    for m in config_store.get_metrics(enabled_only=False):
+        existing.add(m["name"])
+    for e in config_store.get_entities():
+        existing.add(e["name"])
+    for r in config_store.get_relationships(enabled_only=False):
+        existing.add(str(r["id"]))
+
+    conflicts = ossie_adapter.detect_conflicts(internal, existing)
+    report = ossie_adapter.compatibility_report(doc, internal)
+
+    return {
+        "preview": True,
+        "version": version,
+        "version_supported": version_ok,
+        "schema_ok": ok,
+        "schema_errors": errors[:20],            # 只回前 20 条，避免刷屏
+        "references_ok": ref_ok,
+        "reference_issues": ref_issues[:20],
+        "internal": internal,
+        "conflicts": conflicts,
+        "report": report,
+    }
+
+
+# ── OSSIE 导入确认（执行导入：存 semantic_models + 记日志）──
+@app.post("/api/semantic-models/ossie/import")
+def api_ossie_import(body: OssieImportBody, request: Request):
+    """用户确认后执行导入。★ 不信任前端 preview，这里重新解析校验一遍。"""
+    operator = _current_username(request)
+    doc, err = ossie_adapter.parse_document(body.content)
+    if err:
+        raise HTTPException(status_code=400, detail=f"解析失败：{err}")
+    if not isinstance(doc, dict):
+        raise HTTPException(status_code=400, detail="文档根节点必须是对象")
+
+    version = ossie_adapter.detect_version(doc)
+    if not ossie_adapter.is_supported_version(doc):
+        raise HTTPException(status_code=400, detail=(
+            f"不支持的 OSSIE 规范版本 {version!r}（当前支持 {ossie_adapter.OSSIE_VERSION}），"
+            "请先升级内置 schema 或换用匹配版本的文件。"))
+
+    ok, errors = ossie_adapter.validate_document(doc)
+    if not ok:
+        raise HTTPException(status_code=400, detail=f"Schema 校验失败：{'；'.join(errors[:5])}")
+
+    internal = ossie_adapter.parse_model(doc)
+    name = (body.model_name or "").strip() or internal.get("name") or ""
+    if not name:
+        raise HTTPException(status_code=400, detail="模型名不能为空")
+
+    # ★ 导入的模型默认 candidate（需审核后才可作为正式语义资产使用）
+    m = config_store.upsert_semantic_model({
+        "name": name, "description": internal.get("description") or "",
+        "datasets": internal.get("datasets") or [],
+        "metrics": internal.get("metrics") or [],
+        "relationships": internal.get("relationships") or [],
+        "model_extensions": internal.get("model_extensions") or {},
+        "status": "candidate", "source": "ossie_import", "source_system": version,
+    }, operator=operator, note=f"OSSIE 导入（{version}）")
+
+    fmt = body.format or ossie_adapter.detect_format(body.content) or ""
+    config_store.log_ossie_import(
+        name, version, fmt, "success",
+        counts=m.get("counts"), operator=operator)
+    return {"ok": True, "model": m,
+            "message": "导入成功。模型默认进入『待审核』状态，审核通过后生效。"}
+
+
+# ── OSSIE 导出（按模型导出 YAML/JSON + 兼容性报告）──
+@app.get("/api/semantic-models/{model_id}/ossie/export")
+def api_ossie_export(model_id: int, request: Request, format: str = "yaml"):
+    """导出某语义模型为 OSSIE 标准文件（yaml/json），并记导出日志。"""
+    m = config_store.get_semantic_model(model_id)
+    if not m:
+        raise HTTPException(status_code=404, detail=f"语义模型不存在：id={model_id}")
+
+    doc = _model_to_ossie_doc(m)
+    # 导出前先校验（任务书：导出内容必须通过 Schema 校验）
+    ok, errors = ossie_adapter.validate_document(doc)
+    if not ok:
+        raise HTTPException(status_code=500, detail=(
+            f"模型内容无法通过 OSSIE Schema 校验，已阻止导出：{'；'.join(errors[:5])}"))
+
+    fmt = "json" if str(format).lower() == "json" else "yaml"
+    if fmt == "json":
+        content = ossie_adapter.to_json(doc)
+        media = "application/json; charset=utf-8"
+    else:
+        content = ossie_adapter.to_yaml(doc)
+        media = "application/yaml; charset=utf-8"
+
+    report = ossie_adapter.compatibility_report(doc)
+    operator = _current_username(request)
+    config_store.log_ossie_export(m["name"], ossie_adapter.OSSIE_VERSION, fmt, "success",
+                                  report=report, operator=operator)
+
+    safe_name = "".join(ch for ch in m["name"] if ch.isalnum() or ch in "-_") or "model"
+    filename = f"semantic-model-{safe_name}.{fmt}"
+    headers = {
+        "Content-Disposition": f"attachment; filename=\"{filename}\"",
+        "Access-Control-Expose-Headers": "Content-Disposition",
+    }
+    return Response(content=content, media_type=media, headers=headers)
+
+
+# ── OSSIE 导入导出日志 ──
+@app.get("/api/semantic-models/ossie/logs")
+def api_ossie_logs():
+    return {
+        "imports": config_store.list_ossie_import_logs(50),
+        "exports": config_store.list_ossie_export_logs(50),
+    }
+
+
+# ── 语义模型详情 / 编辑 / 删除 / 审核 / 版本 ──
+@app.get("/api/semantic-models/{model_id}")
+def api_semantic_model_get(model_id: int):
+    m = config_store.get_semantic_model(model_id)
+    if not m:
+        raise HTTPException(status_code=404, detail=f"语义模型不存在：id={model_id}")
+    return m
+
+
+@app.put("/api/semantic-models/{model_id}")
+def api_semantic_model_update(model_id: int, body: SemanticModelBody, request: Request):
+    """编辑语义模型（version +1，写版本快照）。"""
+    operator = _current_username(request)
+    existing = config_store.get_semantic_model(model_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail=f"语义模型不存在：id={model_id}")
+    try:
+        m = config_store.upsert_semantic_model({
+            "name": existing["name"],          # 改名走 name 唯一键 → 这里保持原名（如需改名另行处理）
+            "description": body.description,
+            "datasets": body.datasets, "metrics": body.metrics,
+            "relationships": body.relationships, "model_extensions": body.model_extensions,
+            "status": body.status or existing["status"], "source": existing["source"],
+            "source_system": existing["source_system"],
+        }, operator=operator, note="手动编辑")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, "model": m}
+
+
+@app.delete("/api/semantic-models/{model_id}")
+def api_semantic_model_delete(model_id: int):
+    if not config_store.delete_semantic_model(model_id):
+        raise HTTPException(status_code=404, detail=f"语义模型不存在：id={model_id}")
+    return {"ok": True, "message": "已删除"}
+
+
+@app.put("/api/semantic-models/{model_id}/status")
+def api_semantic_model_status(model_id: int, body: SemanticModelStatusBody, request: Request):
+    """审核状态流转（复用治理枚举）。"""
+    operator = _current_username(request)
+    if not config_store.set_semantic_model_status(model_id, body.status, operator):
+        raise HTTPException(status_code=404, detail=f"语义模型不存在：id={model_id}")
+    return {"ok": True, "status": body.status}
+
+
+@app.get("/api/semantic-models/{model_id}/versions")
+def api_semantic_model_versions(model_id: int):
+    return {"items": config_store.list_semantic_model_versions(model_id)}
+
+
+# ═══════════════════════════════════════════════════════════
+# ★ 融合式：动态语义导出 / 导入（知识表是唯一事实源，OSSIE 对象是派生视图）
+#   —— 不落库快照，导出实时从知识表组装，导入写回知识表走审核。
+# ═══════════════════════════════════════════════════════════
+@app.get("/api/semantic/export")
+def api_semantic_export(topic: str = "", format: str = "yaml"):
+    """从知识表【动态组装】OSSIE 标准模型并导出（不落库）。
+
+    topic 为空 → 全量资产；指定 → 该业务主题的实体/指标。
+    """
+    doc = semantic_object_builder.build_semantic_model(
+        topic or None, name=topic or "知数AI语义模型")
+    if not doc.get("datasets"):
+        raise HTTPException(status_code=400, detail=(
+            "当前知识库无已启用的业务实体，无法导出语义模型。请先在「知识资产」登记业务实体。"))
+    ok, errs = ossie_adapter.validate_document(doc)
+    if not ok:
+        raise HTTPException(status_code=500, detail=(
+            f"动态组装的模型未通过 OSSIE Schema 校验：{'；'.join(errs[:5])}"))
+    fmt = "json" if str(format).lower() == "json" else "yaml"
+    content = ossie_adapter.to_json(doc) if fmt == "json" else ossie_adapter.to_yaml(doc)
+    media = ("application/json; charset=utf-8" if fmt == "json"
+             else "application/yaml; charset=utf-8")
+    safe = "".join(ch for ch in (topic or "all") if ch.isalnum() or ch in "-_") or "semantic"
+    filename = f"semantic-{safe}.{fmt}"
+    headers = {"Content-Disposition": f"attachment; filename=\"{filename}\""}
+    return Response(content=content, media_type=media, headers=headers)
+
+
+@app.post("/api/semantic/import")
+def api_semantic_import(body: OssieImportBody, request: Request):
+    """OSSIE YAML/JSON 导入 → 校验 → 写回知识表（source='ai'，走审核，只新增不覆盖）。"""
+    operator = _current_username(request)
+    doc, err = ossie_adapter.parse_document(body.content)
+    if err:
+        raise HTTPException(status_code=400, detail=f"解析失败：{err}")
+    if not isinstance(doc, dict):
+        raise HTTPException(status_code=400, detail="文档根节点必须是对象")
+    if not ossie_adapter.is_supported_version(doc):
+        raise HTTPException(status_code=400, detail=(
+            f"不支持的 OSSIE 规范版本 {ossie_adapter.detect_version(doc)!r}，"
+            f"当前支持 {ossie_adapter.OSSIE_VERSION}"))
+    ok, errs = ossie_adapter.validate_document(doc)
+    if not ok:
+        raise HTTPException(status_code=400, detail=f"Schema 校验失败：{'；'.join(errs[:5])}")
+    ref_ok, ref_issues = ossie_adapter.validate_references(doc)
+    if not ref_ok:
+        raise HTTPException(status_code=400, detail=f"引用完整性校验失败：{'；'.join(ref_issues[:5])}")
+
+    result = semantic_object_builder.import_ossie_to_kb(doc, operator=operator)
+    skipped = len(result.get("skipped_names") or [])
+    return {"ok": True, "result": result,
+            "message": (f"已导入：新增 {result['datasets']['created']} 实体、"
+                        f"{result['metrics']['created']} 指标、"
+                        f"{result['relationships']['created']} 关系；"
+                        f"跳过 {skipped} 个已存在对象。导入对象为「待审核」，复核后生效。")}
+
+
+# ═══════════════════════════════════════════════════════════
+# ★ 业务域 + 业务主题 + 统一语义 API（业务域与标准化业务语义模型）
+# ═══════════════════════════════════════════════════════════
+# ── 业务域 CRUD ──
+@app.get("/api/domains")
+def api_biz_domains():
+    items = config_store.list_business_domains()
+    for d in items:
+        try:
+            d["stats"] = semantic_object_builder.domain_stats(d["name"])
+        except Exception:
+            d["stats"] = None
+    return {"items": items}
+
+
+@app.get("/api/domains/{name}")
+def api_biz_domain_get(name: str):
+    d = config_store.get_business_domain(name)
+    if not d:
+        raise HTTPException(status_code=404, detail=f"业务域不存在：{name}")
+    try:
+        d["stats"] = semantic_object_builder.domain_stats(name)
+    except Exception:
+        d["stats"] = None
+    # 主题级统计（供详情页主题卡片展示分类资产数）
+    for s in d.get("subjects") or []:
+        try:
+            s["stats"] = semantic_object_builder.subject_stats(s["name"])
+        except Exception:
+            s["stats"] = None
+    return d
+
+
+@app.post("/api/domains")
+def api_biz_domain_create(body: BizDomainBody):
+    return config_store.upsert_business_domain(
+        body.name, body.display_name, body.description, body.owner, body.department, body.enabled)
+
+
+@app.put("/api/domains/{name}")
+def api_biz_domain_update(name: str, body: BizDomainBody):
+    return config_store.upsert_business_domain(
+        body.name, body.display_name, body.description, body.owner, body.department, body.enabled)
+
+
+@app.delete("/api/domains/{name}")
+def api_biz_domain_delete(name: str):
+    return config_store.delete_business_domain(name)
+
+
+# ── 业务主题 CRUD ──
+@app.get("/api/subjects")
+def api_biz_subjects(domain_name: str = ""):
+    items = config_store.list_business_subjects(domain_name or None)
+    for s in items:
+        try:
+            s["stats"] = semantic_object_builder.subject_stats(s["name"])
+        except Exception:
+            s["stats"] = None
+    return {"items": items}
+
+
+@app.post("/api/subjects")
+def api_biz_subject_create(body: BizSubjectBody):
+    return config_store.upsert_business_subject(
+        body.name, body.domain_name, body.display_name, body.description, body.enabled)
+
+
+@app.put("/api/subjects/{name}")
+def api_biz_subject_update(name: str, body: BizSubjectBody):
+    # ★ 编辑主题：以 URL 里的 name 为准（标识锁定，不随 body 变更），
+    #   归属域取 body.domain_name（保留现有域），仅更新展示名/描述/启用状态。
+    return config_store.upsert_business_subject(
+        name, body.domain_name, body.display_name, body.description, body.enabled)
+
+
+@app.delete("/api/subjects/{name}")
+def api_biz_subject_delete(name: str):
+    return config_store.delete_business_subject(name)
+
+
+# ── 业务域/主题 资产关联 ──
+@app.get("/api/domains/{name}/assets")
+def api_domain_assets(name: str):
+    return {"items": config_store.list_scope_assets(name, scope="domain")}
+
+
+@app.post("/api/domains/{name}/assets")
+def api_domain_add_asset(name: str, body: ScopeAssetBody):
+    return config_store.add_scope_asset(name, body.asset_type, body.asset_key, scope="domain")
+
+
+@app.delete("/api/domains/{name}/assets/{asset_type}/{asset_key}")
+def api_domain_remove_asset(name: str, asset_type: str, asset_key: str):
+    return config_store.remove_scope_asset(name, asset_type, asset_key, scope="domain")
+
+
+@app.get("/api/subjects/{name}/assets")
+def api_subject_assets(name: str):
+    return {"items": config_store.list_scope_assets(name, scope="subject")}
+
+
+@app.post("/api/subjects/{name}/assets")
+def api_subject_add_asset(name: str, body: ScopeAssetBody):
+    return config_store.add_scope_asset(name, body.asset_type, body.asset_key, scope="subject")
+
+
+@app.delete("/api/subjects/{name}/assets/{asset_type}/{asset_key}")
+def api_subject_remove_asset(name: str, asset_type: str, asset_key: str):
+    return config_store.remove_scope_asset(name, asset_type, asset_key, scope="subject")
+
+
+# ── 统一语义读取接口（Agent 优先使用审核通过的语义对象）──
+@app.get("/api/semantic/objects")
+def api_semantic_objects(subject: str = "", domain: str = ""):
+    """统一语义对象读取：按业务主题/域动态组装 Dataset/Field/Metric/Dimension/Relationship/AI Context。"""
+    key = subject or domain or None
+    return semantic_object_builder.get_semantic_objects(key)
+
+
+# ── 语义模型发布快照（编辑态动态映射，发布态版本固化）──
+@app.post("/api/semantic/models/{name}/publish")
+def api_semantic_publish(name: str, request: Request):
+    """把某业务主题/域动态组装的 OSSIE 模型固化为发布快照（semantic_models，status='published'）。"""
+    operator = _current_username(request)
+    doc = semantic_object_builder.build_semantic_model(name, name=name)
+    if not doc.get("datasets"):
+        raise HTTPException(status_code=400, detail="该主题/域无已启用的业务实体，无法发布")
+    ok, errs = ossie_adapter.validate_document(doc)
+    if not ok:
+        raise HTTPException(status_code=400, detail=f"发布前校验失败：{'；'.join(errs[:5])}")
+    m = config_store.upsert_semantic_model({
+        "name": name,
+        "description": "业务主题「%s」发布快照" % name,
+        "datasets": doc.get("datasets"), "metrics": doc.get("metrics"),
+        "relationships": doc.get("relationships"),
+        "model_extensions": doc.get("nonportable_extensions") or {},
+        "status": "published", "source": "publish",
+    }, operator=operator, note="发布快照")
+    return {"ok": True, "model": m, "message": "已发布为语义模型快照（版本固化，可追溯回滚）"}
+
+
+# ── 应用到知识库（P3：审核通过的语义模型 → 同步回知识表）──
+@app.post("/api/semantic-models/{model_id}/apply")
+def api_semantic_model_apply(model_id: int, request: Request):
+    """把审核通过的语义模型同步回知识表（dataset→实体，metric→指标，relationship→关系）。
+
+    ★ 只新增，绝不覆盖已存在对象；未审核（非 approved）的模型拒绝应用。
+    """
+    operator = _current_username(request)
+    m = config_store.get_semantic_model(model_id)
+    if not m:
+        raise HTTPException(status_code=404, detail=f"语义模型不存在：id={model_id}")
+    if m.get("status") != "approved":
+        raise HTTPException(status_code=400, detail="只有审核通过（approved）的模型才能应用到知识库")
+    result = semantic_object_builder.apply_approved_model_to_kb(m, operator=operator)
+    skipped = len(result.get("skipped_names") or [])
+    return {"ok": True, "result": result,
+            "message": (f"已应用：新增 {result['datasets']['created']} 实体、"
+                        f"{result['metrics']['created']} 指标、"
+                        f"{result['relationships']['created']} 关系；"
+                        f"跳过 {skipped} 个已存在对象。★ 点『重建索引』后生效")}
+
+
+# ═══════════════════════════════════════════════════════════
+# 本体建模（语义中心 · 阶段二）：Object / Attribute / Relation / Rule
+#   ★ 只读复用 entities / relationships / column_comments 本体，
+#     仅对「实体↔属性」「实体↔规则」做登记，不复制资产本体。
+# ═══════════════════════════════════════════════════════════
+class OntologyAttrBody(BaseModel):
+    """实体属性映射登记"""
+    entity_key: str = ""
+    attr_type: str = ""          # column / dict / derived
+    attr_key: str = ""           # 属性本体键（column 用 "table.column"，dict 用 name）
+    label: str = ""
+    is_key: bool = False
+
+
+class OntologyRuleBody(BaseModel):
+    """业务规则登记"""
+    entity_key: str = ""
+    rule_type: str = ""          # metric_constraint / sql_rule / join_rule / biz_rule
+    rule_ref: str = ""
+    description: str = ""
+
+
+class OntologyEntityBody(BaseModel):
+    """实体本体编辑（英文标识 / 描述 / 粒度 / 主键）"""
+    entity_code: str = ""
+    comment: str = ""
+    grain: str = ""
+    primary_key: list = []
+
+
+@app.get("/api/ontology/entities")
+def api_ontology_entities():
+    """本体实体列表（含英文标识）。"""
+    ents = config_store.get_entities_with_governance()
+    code_map = ontology.get_entity_code_map()
+    for e in ents:
+        e["entity_code"] = code_map.get(e["name"], "")
+        e["primary_key"] = e.get("primary_key") or []
+    return {"items": ents}
+
+
+@app.get("/api/ontology/entity/{name}")
+def api_ontology_entity(name: str):
+    """实体详情：实体 + 字段属性（派生）+ 属性登记 + 关系 + 规则。"""
+    d = ontology.get_entity_detail(name)
+    if not d:
+        raise HTTPException(status_code=404, detail=f"实体不存在：{name}")
+    return d
+
+
+@app.put("/api/ontology/entity/{name}")
+def api_ontology_entity_update(name: str, body: OntologyEntityBody, request: Request):
+    """编辑实体本体（英文标识 / 描述 / 粒度 / 主键）。★ 空字符串视为不修改。"""
+    operator = _current_username(request)
+    ent = next((e for e in config_store.get_entities_with_governance()
+                if e["name"] == name), None)
+    if not ent:
+        raise HTTPException(status_code=404, detail=f"实体不存在：{name}")
+    # 英文标识独立写（空串 = 清空）
+    ontology.set_entity_code(name, body.entity_code, operator=operator)
+    # 基础字段（空则保留原值）
+    payload = {
+        "name": name,
+        "table_name": ent.get("table_name") or "",
+        "grain": body.grain if body.grain else ent.get("grain", ""),
+        "comment": body.comment if body.comment else ent.get("comment", ""),
+        "keywords": ent.get("keywords") or [],
+        "enabled": ent.get("enabled", True),
+        "primary_key": body.primary_key if body.primary_key else (ent.get("primary_key") or []),
+    }
+    ok, msg = config_store.upsert_entity(payload, source="manual", operator=operator)
+    return {"ok": ok, "message": msg}
+
+
+@app.get("/api/ontology/graph")
+def api_ontology_graph():
+    """关系画布数据：实体节点 + 关系边（含关联键 / 基数）。"""
+    return ontology.get_graph()
+
+
+@app.get("/api/ontology/attributes")
+def api_ontology_attributes(entity: str = ""):
+    return {"items": ontology.list_attributes(entity or None)}
+
+
+@app.post("/api/ontology/attributes")
+def api_ontology_attr_create(body: OntologyAttrBody, request: Request):
+    operator = _current_username(request)
+    ok, msg = ontology.upsert_attribute(
+        body.entity_key, body.attr_type, body.attr_key, body.label, body.is_key, operator=operator)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"ok": True, "message": msg}
+
+
+@app.delete("/api/ontology/attributes/{attr_id}")
+def api_ontology_attr_delete(attr_id: int):
+    return ontology.delete_attribute(attr_id)
+
+
+@app.get("/api/ontology/rules")
+def api_ontology_rules(entity: str = ""):
+    return {"items": ontology.list_rules(entity or None)}
+
+
+@app.post("/api/ontology/rules")
+def api_ontology_rule_create(body: OntologyRuleBody, request: Request):
+    operator = _current_username(request)
+    ok, msg = ontology.upsert_rule(
+        body.entity_key, body.rule_type, body.rule_ref, body.description, operator=operator)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"ok": True, "message": msg}
+
+
+@app.delete("/api/ontology/rules/{rule_id}")
+def api_ontology_rule_delete(rule_id: int):
+    return ontology.delete_rule(rule_id)
+
+
+# ═══════════════════════════════════════════════════════════
+# 语义建模（语义中心 · 阶段三）：关系模型 / 指标 / 维度
+#   ★ 关系模型 = 业务主题；表清单/Join 只做「表级显式登记」，本体复用 entities/relationships。
+# ═══════════════════════════════════════════════════════════
+class ModelingTableBody(BaseModel):
+    model_key: str
+    table_name: str
+    role: str = "related"        # primary / related / satellite
+    grain: str = ""
+
+
+class ModelingJoinBody(BaseModel):
+    model_key: str
+    from_table: str
+    to_table: str
+    join_type: str = "inner"
+    cardinality: str = "1:1"
+    from_columns: list = []
+    to_columns: list = []
+    join_sql: str = ""
+    pre_agg_required: bool = False
+
+
+class ModelingDimBody(BaseModel):
+    dimension_key: str
+    name: str
+    dimension_type: str = "other"
+    entity_key: str = ""
+    source_table: str = ""
+    source_column: str = ""
+    model_key: str = ""
+    hierarchy: list = []
+    analyzable: bool = True
+    permission_scope: str = ""
+
+
+class ModelingMetricBody(BaseModel):
+    metric_code: str = ""
+    metric_category: str = ""    # atomic / derived / composite
+
+
+@app.get("/api/modeling/models")
+def api_modeling_models():
+    """关系模型列表（= 业务主题）。"""
+    subjects = config_store.list_business_subjects()
+    for s in subjects:
+        try:
+            s["stats"] = semantic_object_builder.subject_stats(s["name"])
+        except Exception:
+            s["stats"] = None
+    return {"items": subjects}
+
+
+@app.get("/api/modeling/models/{key}")
+def api_modeling_model_detail(key: str):
+    d = semantic_modeling.get_model_detail(key)
+    if not d:
+        raise HTTPException(status_code=404, detail=f"关系模型（业务主题）不存在：{key}")
+    return d
+
+
+@app.post("/api/modeling/tables")
+def api_modeling_table_create(body: ModelingTableBody, request: Request):
+    operator = _current_username(request)
+    ok, msg = semantic_modeling.upsert_model_table(
+        body.model_key, body.table_name, body.role, body.grain, operator=operator)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"ok": True, "message": msg}
+
+
+@app.delete("/api/modeling/tables/{table_id}")
+def api_modeling_table_delete(table_id: int):
+    return semantic_modeling.delete_model_table(table_id)
+
+
+@app.post("/api/modeling/joins")
+def api_modeling_join_create(body: ModelingJoinBody, request: Request):
+    operator = _current_username(request)
+    ok, msg = semantic_modeling.upsert_model_join(
+        body.model_key, body.from_table, body.to_table, body.join_type, body.cardinality,
+        body.from_columns, body.to_columns, body.join_sql, body.pre_agg_required, operator=operator)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"ok": True, "message": msg}
+
+
+@app.delete("/api/modeling/joins/{join_id}")
+def api_modeling_join_delete(join_id: int):
+    return semantic_modeling.delete_model_join(join_id)
+
+
+@app.get("/api/modeling/metrics")
+def api_modeling_metrics():
+    """指标管理列表（含英文标识 + 三分类 + 动态提取表达式）。"""
+    return {"items": semantic_modeling.list_metrics_modeling()}
+
+
+@app.put("/api/modeling/metrics/{name}")
+def api_modeling_metric_update(name: str, body: ModelingMetricBody, request: Request):
+    operator = _current_username(request)
+    ok, msg = semantic_modeling.set_metric_modeling(name, body.metric_code, body.metric_category, operator=operator)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"ok": True, "message": msg}
+
+
+@app.get("/api/modeling/dimensions")
+def api_modeling_dimensions(model: str = ""):
+    return {"items": semantic_modeling.list_dimensions(model or None)}
+
+
+@app.get("/api/modeling/dimension-candidates")
+def api_modeling_dimension_candidates():
+    return {"items": semantic_modeling.derive_dimension_candidates()}
+
+
+@app.post("/api/modeling/dimensions")
+def api_modeling_dimension_create(body: ModelingDimBody, request: Request):
+    operator = _current_username(request)
+    ok, msg = semantic_modeling.upsert_dimension(body.dict(), operator=operator)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"ok": True, "message": msg}
+
+
+@app.delete("/api/modeling/dimensions/{dim_id}")
+def api_modeling_dimension_delete(dim_id: int):
+    return semantic_modeling.delete_dimension(dim_id)
+
+
+class AiModelBody(BaseModel):
+    """AI 智能建模：自然语言业务场景描述"""
+    text: str
+
+
+@app.post("/api/modeling/ai-model")
+def api_modeling_ai_model(body: AiModelBody):
+    """业务场景 → 完整语义模型（实体/关系/指标/维度），全部落库「待审核」。"""
+    return ai_ingest.model_scenario(body.text)
+
+
+# ═══════════════════════════════════════════════════════════
+# 逻辑视图（语义中心 · 阶段四）：语义资产血缘，只读
+# ═══════════════════════════════════════════════════════════
+@app.get("/api/lineage/overview")
+def api_lineage_overview():
+    return lineage.get_overview()
+
+
+@app.get("/api/lineage/graph")
+def api_lineage_graph():
+    return lineage.get_global_graph()
+
+
+@app.get("/api/lineage/entity/{name}")
+def api_lineage_entity(name: str):
+    d = lineage.get_entity_lineage(name)
+    if not d:
+        raise HTTPException(status_code=404, detail=f"实体不存在：{name}")
+    return d
+
+
+@app.get("/api/lineage/metric/{name}")
+def api_lineage_metric(name: str):
+    d = lineage.get_metric_lineage(name)
+    if not d:
+        raise HTTPException(status_code=404, detail=f"指标不存在：{name}")
+    return d
+
+
+@app.get("/api/lineage/conflicts")
+def api_lineage_conflicts():
+    return {"items": lineage.get_conflicts()}
 
 
 # ═══════════════════════════════════════════════════════════

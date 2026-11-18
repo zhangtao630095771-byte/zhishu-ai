@@ -89,12 +89,76 @@ def disable_entity_filter():
         semantic_layer.retrieve_semantic = orig
 
 
+@contextlib.contextmanager
+def disable_semantic_layer():
+    """B：关闭 Semantic Layer —— 把 P0~P4 分层语义检索整体置空，
+    让 ctx 空 → 触发零召回兜底拒答，量化语义层本身的贡献。"""
+    import semantic_layer
+    orig = semantic_layer.retrieve_semantic
+    semantic_layer.retrieve_semantic = lambda *a, **k: semantic_layer.SemanticContext()
+    try:
+        yield
+    finally:
+        semantic_layer.retrieve_semantic = orig
+
+
+@contextlib.contextmanager
+def disable_join_cardinality():
+    """E：关闭 JOIN 基数约束 —— 只停用 P2 一对一/一对多预聚合检查（不碰其它维度）。"""
+    import sql_validator
+    orig = sql_validator._check_p2
+    sql_validator._check_p2 = lambda *a, **k: None
+    try:
+        yield
+    finally:
+        sql_validator._check_p2 = orig
+
+
+@contextlib.contextmanager
+def disable_sql_experience():
+    """F：关闭 SQL 经验检索 —— retrieve 恒返回 None（无成功案例参考 / 无失败预防）。"""
+    import sql_experience
+    orig = sql_experience.retrieve
+    sql_experience.retrieve = lambda *a, **k: None
+    try:
+        yield
+    finally:
+        sql_experience.retrieve = orig
+
+
+@contextlib.contextmanager
+def disable_trust_ranking():
+    """D：关闭知识可信等级排序 —— 把 trust/verify 权重归零（仅保留语义/表/指标相似度排序）。"""
+    import config
+    orig = getattr(config, "EXP_RANK_WEIGHTS", None)
+    w = dict(orig or {})
+    w["trust"] = 0.0
+    w["verify"] = 0.0
+    config.EXP_RANK_WEIGHTS = w
+    try:
+        yield
+    finally:
+        if orig is None:
+            # 原本没有显式权重 → 恢复默认（删除属性回到 getattr 默认 {}）
+            try:
+                del config.EXP_RANK_WEIGHTS
+            except Exception:
+                pass
+        else:
+            config.EXP_RANK_WEIGHTS = orig
+
+
 MODULES = {
     "sql_validator": disable_sql_validator,
     "result_validator": disable_result_validator,
     "dictionary": disable_dictionary,
     "calendar": disable_calendar,
     "entity_filter": disable_entity_filter,
+    # ★ 本次 P0-4 补齐：B/C/E/F/D 对照（对齐任务书 §6.4 的七组消融）
+    "semantic_layer": disable_semantic_layer,       # B 关闭 Semantic Layer
+    "join_cardinality": disable_join_cardinality,   # E 关闭 JOIN 基数约束
+    "sql_experience": disable_sql_experience,       # F 关闭 SQL 经验检索
+    "trust_ranking": disable_trust_ranking,         # D 关闭知识可信等级排序
 }
 
 # ★ 安全 / 合规模块：永不消融（即使显式指定也拒绝）。

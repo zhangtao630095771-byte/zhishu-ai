@@ -217,6 +217,37 @@ def _sqlglot():
         return None, None
 
 
+def _parse_sql(sql):
+    """★ 方言感知解析（与 guard 保持一致）：优先 ClickHouse 方言，失败再退回无方言。
+
+    ★ 为什么必须指定方言？
+      字段级权限用 sqlglot 把 SQL 解析成 AST 做字段归属判定；但模型生成的是
+      ClickHouse SQL，其中 FORMAT / SETTINGS 以及部分函数只有 CH 方言能解析。
+      若用默认的「通用方言」解析，会抛 `Invalid expression / Unexpected token`，
+      导致整条（完全合法）的查询被 fail-closed 拒绝 —— 这正是「字段级权限拦截：
+      SQL 解析失败」的真实来源。
+      → 用 CH 方言解析，解析失败再退回无方言（仍失败则维持拒绝语义，绝不 fail-open）。
+    """
+    sqlglot, _ = _sqlglot()
+    if sqlglot is None:
+        raise RuntimeError("SQL 解析器不可用")
+    candidates = []
+    if getattr(config, "DB_TYPE", "") == "clickhouse":
+        candidates.append("clickhouse")      # 数据源是 ClickHouse → 优先用对应方言
+    candidates.append(None)                  # 无方言兜底（通用）
+    last = None
+    for name in candidates:
+        try:
+            tree = sqlglot.parse_one(sql, read=name) if name else sqlglot.parse_one(sql)
+            if tree is not None:
+                return tree
+        except Exception as e:
+            last = e
+    if last:
+        raise last
+    raise RuntimeError("SQL 解析失败")
+
+
 def _meta_map(meta):
     """
     把表元数据规整成 {表名: {列名集合}}，供 SELECT * 展开与字段归属判断。
@@ -308,7 +339,7 @@ def evaluate(sql, user, meta, policies=None, sensitive=None, action=ACTION_QUERY
         return decision
 
     try:
-        tree = sqlglot.parse_one(sql)
+        tree = _parse_sql(sql)
     except Exception as e:
         decision["allowed"] = False
         decision["deny_reasons"].append(f"SQL 解析失败，无法进行字段级权限判定：{str(e)[:100]}")
@@ -713,7 +744,7 @@ def apply_row_filters(sql, user, row_rules=None, user_attrs=None):
     if sqlglot is None:
         return None, False, "SQL 解析器不可用，无法注入行级过滤"
     try:
-        tree = sqlglot.parse_one(sql)
+        tree = _parse_sql(sql)
     except Exception:
         return None, False, "SQL 解析失败，无法注入行级过滤"
 

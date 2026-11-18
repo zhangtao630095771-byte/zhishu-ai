@@ -21,6 +21,7 @@ import rag         # 检索
 import json        # ★ 解析自审报告 JSON
 import re          # ★ 正则提取自审报告 JSON
 import time        # ★ 记录流水线各阶段耗时（trace 可观测性）
+import concurrent.futures   # ★ 尾段并行（自然语言回答 ∥ 事后自审，互不依赖）
 
 # ★ 企业级架构升级新增的语义层模块（Semantic Layer + 多路 RAG + Validator）
 import config_store        # 配置库（角色 / 规则 / 实体 / 关系 / 文档）
@@ -31,6 +32,13 @@ import result_validator    # SQL 执行后结果校验
 import permission          # ★ 字段级权限引擎（ALLOW/MASK/DENY + AST 拦截 + 结果脱敏）
 import nl_answer           # 自然语言回答生成
 import calendar_util       # ★ 日历/节假日感知（时间口径解析 + 当前日期）
+import sql_experience      # ★ SQL 经验中心（历史成功案例参考 / 失败经验预防）
+import requirement_review  # ★ 需求一致性审核（第六维：这条 SQL 是否回答了"用户这次问的问题"）
+import sql_modify         # ★ SQL 多轮修改结构保护（AST 差异校验 + 授权范围识别，P0）
+import exceptions         # ★ LLM 错误分类（区分 4xx 不可重试 / 429 退避 / 超时网络可重试）
+import semantic_builder   # ★ 语义上下文构建审计（统一注册表核对命中知识治理状态，只观测不阻断）
+import business_domain_service  # ★ 业务域识别 + 语义对象注入（Agent 使用标准语义知识，动态映射）
+import task_state         # ★ 任务状态/事件协议（SSE 改造用，零依赖，无循环 import 风险）
 
 
 # ═══════════════════════════════════════════════════════════
@@ -209,7 +217,7 @@ def _table_swap_note(question, sql, sidx, ctx):
 
 def _result(question, sql="", ok=False, error="", columns=None, rows=None,
             tables=None, metrics=None, dicts=None, info="", attempts=0,
-            understanding=None, pipeline=None):
+            understanding=None, pipeline=None, experience=None, **extra):
     """
     统一的结果格式（这样调用方不用猜返回了什么字段）
     ★ 这种做法叫"约定数据结构"：所有出口都返回同一种形状的字典
@@ -220,7 +228,7 @@ def _result(question, sql="", ok=False, error="", columns=None, rows=None,
       用户就没法判断"是模型理解错了还是知识库缺东西"。
       放进统一的出口里，就不会再有人漏掉。
     """
-    return {
+    d = {
         "question": question,      # 原始问题
         "sql": sql,                # 最终执行的 SQL
         "ok": ok,                  # 是否成功
@@ -234,7 +242,14 @@ def _result(question, sql="", ok=False, error="", columns=None, rows=None,
         "attempts": attempts,      # 实际尝试了几次
         "understanding": understanding,  # ★ 查询理解（失败时也要有，便于定位）
         "pipeline": pipeline,      # ★ v2=企业级 / legacy=旧兜底
+        # ★ 本次召回/采用了哪些历史经验（成功案例/失败模式/规则）
+        #   失败分支也要有：否则"为什么这次没参考到经验"永远查不出来
+        "experience": experience,
     }
+    # ★ 私有附加字段（下划线开头）：只在进程内传递，服务端不会放进响应体。
+    #   典型用法：_exp_match —— 原始经验匹配对象，落库拿到 record_id 后补使用日志。
+    d.update(extra)
+    return d
 
 
 def _parse_review(raw):
@@ -254,250 +269,66 @@ def _parse_review(raw):
     return {"overall": raw.strip(), "fields": [], "risks": [], "needs_fix": None}
 
 
-def _review_sql(question, sql, definitions=""):
+def _sql_risk_level(sql, ctx, resolved=None, last_check=None):
+    """确定 SQL 风险等级（LOW/MEDIUM/HIGH），只基于结构 + 校验结果，不看长度。
+
+    LOW    ：单表简单查询（简单过滤/聚合、无口径依赖、无 JOIN）
+    MEDIUM ：多表 JOIN / 复杂指标 / 多个筛选 / 业务口径依赖
+    HIGH   ：一对多或多对多 JOIN / 跨主题 / 复杂指标计算 / 粒度冲突 / 校验报错
     """
-    ★ SQL 逻辑自审层：生成 SQL 后、返回前，额外调一次 LLM 做【字段级逻辑诊断】
-    仅诊断、不改 SQL、不重跑（见 prompt.build_review_prompt）。
-    失败（模型超时 / JSON 解析失败 / 开关关闭）一律返回 None，不影响主结果。
+    tables = getattr(ctx, "p3_tables", None) or []
+    metrics = getattr(ctx, "p1_metrics", None) or []
+    rels = getattr(ctx, "p2_relationships", None) or []
+    sql_up = (sql or "").upper()
+
+    has_join = bool(rels) or " JOIN " in sql_up
+    has_subquery = re.search(r"\(\s*SELECT\b", sql or "", re.I) is not None
+    has_cte = re.search(r"\bWITH\b", sql_up) is not None
+    has_ratio = ("/" in (sql or "")) or "NULLIF" in sql_up
+    has_cond_agg = re.search(r"\bCASE\b|\bIF\s*\(|\bMULTIIF\s*\(", sql_up) is not None
+
+    issues = (last_check or {}).get("issues") or []
+    has_error = any(i.get("severity") == "error" for i in issues)
+
+    # 一对多/多对多/笛卡尔：关系基数提示，或校验器 join_pre_agg 命中
+    many = any(s in str(rels) for s in ("一对多", "多对多", "笛卡尔"))
+    join_preagg = any(i.get("rule") == "join_pre_agg" for i in issues)
+
+    if (many or join_preagg or has_cte or has_subquery or has_error
+            or (has_join and has_cond_agg) or (has_join and has_ratio)
+            or (has_join and len(tables) >= 3)):
+        return "HIGH"
+    if has_join or metrics or has_ratio or has_cond_agg or issues:
+        return "MEDIUM"
+    return "LOW"
+
+
+def _review_sql(question, sql, definitions="", risk="MEDIUM"):
+    """
+    ★ SQL 逻辑自审层（分层）：按风险等级决定是否 / 如何调 LLM 做逻辑诊断。
+      仅诊断、不改 SQL、不重跑（见 prompt.build_review_prompt）。
+      失败（超时 / JSON 解析失败 / 开关关闭）一律返回 None，不影响主结果。
+
+    risk 分级：
+      LOW    → 跳过（规则校验已覆盖，避免无条件完整 LLM 自审）
+      MEDIUM → 轻量自审（只出整体结论 + 风险点，短输出 + 短超时）
+      HIGH   → 深度自审（逐字段诊断，长输出 + 较长超时）
     """
     if not config.SQL_REVIEW_ENABLED or not sql or _refusal_reason(sql):
         return None
+    if risk == "LOW":
+        return None                       # ★ 简单查询不再无条件完整自审
+    deep = (risk == "HIGH")
+    timeout = (config.SQL_REVIEW_TIMEOUT_HIGH if deep
+               else config.SQL_REVIEW_TIMEOUT_MEDIUM)
     try:
-        rp = prompt.build_review_prompt(question, sql, definitions)
-        raw = llm.chat("", rp)                    # 独立 system（空），角色与要求都写进 user 里
+        rp = prompt.build_review_prompt(question, sql, definitions, deep=deep)
+        # ★ 不设 max_tokens：实测该端点带 max_tokens 会返回空串；靠 light prompt 短输出 + timeout 控时。
+        raw = llm.chat("", rp, timeout=timeout)
         return _parse_review(raw)
     except Exception as e:
         print(f"⚠️ SQL 逻辑自审失败（不影响主结果）：{e}")
         return None
-
-
-def ask_legacy(index, question, user=None):
-    """
-    处理一个自然语言问题，返回结果字典（原单路 RAG 流水线，保留作兜底）
-
-    index = rag.build_index() 建好的索引（启动时建一次，之后反复用）
-    user  = 可信用户；非空时同样执行字段级权限闸门（Legacy 不得绕过权限）。
-    """
-    meta = None
-    if user is not None:
-        meta = index.get("tables") or []
-    # ═══════════════════════════════════════════════
-    # ① 检索：找出这次该用哪些表、哪些指标
-    # ═══════════════════════════════════════════════
-    table_names, metric_names, info, _ = rag.retrieve(index, question)
-
-    # ★ 命中指标的业务口径文本（供逻辑自审层核对字段逻辑，减少误报）
-    defs = "\n".join(
-        m.get("definition", "") for m in (index.get("metrics") or [])
-        if m.get("name") in metric_names
-    )
-
-    # ═══════════════════════════════════════════════════════
-    # ★ 构建 Legacy 语义上下文（补齐业务校验：与 V2 使用同一套 sql_validator）
-    #   原 Legacy 只做 只读+表权限+字段权限，缺少 P1指标硬约束 / P2 JOIN / P3 列存在性。
-    #   这里用命中的指标/表/关系拼出最小 SemanticContext，复用 sql_validator，
-    #   使 Legacy 兜底路径的业务校验与 V2 保持一致，杜绝「回退即弱校验」的绕过。
-    # ═══════════════════════════════════════════════════════
-    legacy_ctx = semantic_layer.SemanticContext()
-    legacy_ctx.p1_metrics = [m for m in (index.get("metrics") or [])
-                             if m.get("name") in metric_names]
-    retrieved_tables = set(table_names)
-    legacy_ctx.p3_table_objs = [t for t in (index.get("tables") or [])
-                                if t.get("name") in retrieved_tables]
-    try:
-        _legacy_rels = config_store.get_relationships(enabled_only=True)
-    except Exception:
-        _legacy_rels = []          # 配置库未初始化/关系表缺失时降级为空（不阻塞主流程）
-    legacy_ctx.p2_relationships = [
-        r for r in _legacy_rels
-        if (r.get("from_entity") or "") in retrieved_tables
-        or (r.get("to_entity") or "") in retrieved_tables
-    ]
-    legacy_resolved = {
-        "bindings": {m["name"]: (m.get("definition", ""), semantic_layer.P1)
-                     for m in legacy_ctx.p1_metrics},
-        "metric_types": {m["name"]: m.get("metric_type")
-                         for m in legacy_ctx.p1_metrics},
-        "metrics": [m["name"] for m in legacy_ctx.p1_metrics],
-    }
-
-    # ═══════════════════════════════════════════════
-    # ①.2 ★ 数据字典：召回"字段取值的含义"
-    # ═══════════════════════════════════════════════
-    #   ★ 为什么字典要单独一条检索线？
-    #     表结构告诉模型"有个字段叫 app_entity_source"，
-    #     但没告诉它"101 是车拖车、201 是慧拉车"。
-    #     缺了这层，模型只能猜编码 —— 猜出来的是"能跑但全错"的 SQL。
-    #   注意：召不到字典不拦截（有些问题本来就不涉及编码），
-    #         它是"加分项"，不是"必需项"。
-    dict_names, dict_reason = rag.retrieve_dicts(index, question)
-    info = f"{info} | 字典:{dict_reason}"
-    if dict_names:
-        print(f"  ★ 命中数据字典：{dict_names}")
-
-    # ═══════════════════════════════════════════════
-    # ①.5 ★★ 指标级权限：问题在问一个【未开放】的指标 → 直接拒绝
-    # ═══════════════════════════════════════════════
-    #   ★ 为什么这道检查必须存在？
-    #     停用的指标不进知识库（AI 检索不到口径），但这不够 ——
-    #     模型可能看到表里有 amount 字段，就自己拼一个 SUM(amount)/COUNT(*) 出来。
-    #     结果是一条"能跑、不报错、但口径是错的"SQL。
-    #     企业里最贵的错误就是这个：静默算错，没人发现。
-    #   ★ 和下面的"表为空就拒绝"是对称设计：
-    #       表：检索不到   → 拒绝（防止编造表名字段）
-    #       指标：问的是未开放的 → 拒绝（防止自己编口径）
-    blocked_metric = rag.match_disabled_metric(index, question)
-    if blocked_metric:
-        return _result(
-            question, sql="", ok=False,
-            error=f"该指标未开放访问：{blocked_metric}",
-            metrics=[blocked_metric], dicts=dict_names, info=info,
-        )
-
-    # ═══════════════════════════════════════════════
-    # ② ★★ 兜底：一张表都没检索到 → 直接拒绝
-    # ═══════════════════════════════════════════════
-    if not table_names:
-        #  not 列表：列表为空时为 True
-        # ★ 为什么必须拒绝，而不是"让它试试"？
-        #   因为不给表结构，模型会凭训练记忆编造表名和字段名，
-        #   生成一条"能跑但完全错"的 SQL —— 这比报错危险得多。
-        return _result(
-            question, sql="", ok=False,
-            error="未识别到相关数据表，已拦截（防止模型编造）",
-            metrics=metric_names, dicts=dict_names, info=info,
-        )
-
-    # ═══════════════════════════════════════════════
-    # ③ 组装 System Prompt：只注入命中的表、指标和字典
-    # ═══════════════════════════════════════════════
-    system_prompt = prompt.build_system_prompt(
-        index["tables"], index["metrics"], table_names, metric_names,
-        index.get("dicts"), dict_names, question,
-    )
-
-    # ═══════════════════════════════════════════════
-    # ④ 调大模型，生成 SQL
-    # ═══════════════════════════════════════════════
-    raw_sql = llm.chat(system_prompt, question)     # system = 规矩和上下文，user = 问题
-    sql = _finalize_sql(raw_sql)                    # ★ 清洗 + 补库名前缀
-
-    # ═══════════════════════════════════════════════
-    # ⑤ 如果模型自己说"无法回答"，直接返回（不执行）
-    #    ★ 用 _refusal_reason 识别：行注释/块注释都认，且"不是 SELECT/WITH"一律当拒答
-    # ═══════════════════════════════════════════════
-    _refuse = _refusal_reason(sql)
-    if _refuse:
-        return _result(
-            question, sql=sql, ok=False, error=_refuse,
-            tables=table_names, metrics=metric_names, info=info,
-        )
-        #  lstrip("- ") = 去掉开头所有的 "-" 和空格
-
-    # ═══════════════════════════════════════════════
-    # ⑥ ★ 重试循环：安检 → 执行 → 失败就自愈 → 再试
-    # ═══════════════════════════════════════════════
-    for attempt in range(1, config.MAX_RETRY + 1):
-        #             range(1, 4) = 1, 2, 3（最多三轮）
-
-        # ── 第一道校验：安全护栏（只读，不许 DELETE/DROP）──
-        allowed, why = guard.sql_guard(sql)
-        if not allowed:
-            return _result(
-                question, sql=sql, ok=False,
-                error=f"安全护栏拦截：{why}",
-                tables=table_names, metrics=metric_names, dicts=dict_names,
-                info=info, attempts=attempt,
-            )
-
-        # ── ★ 第二道校验：表级权限（只允许查询白名单里的表）──
-        #   为什么 RAG 已经过滤过了，这里还要再查一遍？
-        #     RAG 过滤 = 控制"模型看见什么"（软约束，靠模型自觉）
-        #     这里校验 = 控制"什么能被执行"（硬约束，代码说了算）
-        #   模型有可能从训练数据里知道一张敏感表的名字，凭记忆写出来 ——
-        #   这一道就是拦这种情况的。
-        tbl_chk = guard.check_tables_ex(sql, index["allowed_tables"])
-        #         ★ 用 ex 版本：解析不可信时会 fail-closed，并给出具体原因
-        if not tbl_chk["ok"]:
-            return _result(
-                question, sql=sql, ok=False,
-                error=tbl_chk["message"] or f"越权访问被拦截：{tbl_chk['illegal']}",
-                tables=table_names, metrics=metric_names, dicts=dict_names,
-                info=info, attempts=attempt,
-            )
-
-        # ── ★ 业务校验（与 V2 同一套 sql_validator）：指标硬约束 / JOIN / 列存在性 ──
-        #   ★ 补齐 Legacy 缺的业务校验（GAP-1）。校验 error 级问题 → 回灌模型自愈，
-        #     用尽重试仍未达标 → 拒绝执行（fail-closed），与 V2 行为一致。
-        v = sql_validator.validate_sql_ex(sql, legacy_ctx, legacy_resolved,
-                                          index["allowed_tables"])
-        if sql_validator._has_error(v["issues"]):
-            err = _format_issues([i for i in v["issues"] if i["severity"] == "error"]) \
-                  or "SQL 未通过业务校验"
-            if attempt >= config.MAX_RETRY:
-                r = _result(
-                    question, sql=sql, ok=False,
-                    error=f"SQL 未通过业务校验（已重试）：{err}",
-                    tables=table_names, metrics=metric_names, dicts=dict_names,
-                    info=info, attempts=attempt,
-                )
-                r["validation"] = v["issues"]
-                r["validation_status"] = v["status"]
-                return r
-            fix_user_prompt = prompt.build_repair_prompt(question, sql, err)
-            fixed_raw = llm.chat(system_prompt, fix_user_prompt)
-            sql = _finalize_sql(fixed_raw)
-            continue
-
-        # ── ★ 字段级权限闸门（Legacy 不得绕过）──
-        perm_decision = None
-        if user is not None:
-            perm_decision = permission.evaluate(sql, user, meta)
-            if not perm_decision["allowed"]:
-                return _result(
-                    question, sql=sql, ok=False,
-                    error="字段级权限拦截：" + "；".join(perm_decision["deny_reasons"]),
-                    tables=table_names, metrics=metric_names, dicts=dict_names,
-                    info=info, attempts=attempt,
-                )
-
-        # ── 执行（★ 必须走唯一出口 _exec_sql）──
-        try:
-            columns, rows = _exec_sql(sql)           # 真正去数据库跑
-            if perm_decision and perm_decision.get("mask_map"):
-                rows = permission.mask_rows(columns, rows, perm_decision["mask_map"])
-            r = _result(                             # 成功，直接返回
-                question, sql=sql, ok=True,
-                columns=columns, rows=rows,
-                tables=table_names, metrics=metric_names, dicts=dict_names,
-                info=info, attempts=attempt,
-            )
-            r["review"] = _review_sql(question, sql, defs)   # ★ 成功路径：追加逻辑自审报告
-            return r
-        except NotExecutable as ne:                  # ★ 闸门拦下：不是查询语句 → 直接失败，不重试
-            return _result(
-                question, sql=sql, ok=False, error=str(ne),
-                tables=table_names, metrics=metric_names, dicts=dict_names,
-                info=info, attempts=attempt,
-            )
-        except Exception as e:                       # 执行报错，进这里
-            err = str(e)
-            if attempt >= config.MAX_RETRY:          # 已经是最后一次
-                r = _result(
-                    question, sql=sql, ok=False,
-                    error=f"执行失败（已重试 {attempt} 次）：{err}",
-                    tables=table_names, metrics=metric_names, dicts=dict_names,
-                    info=info, attempts=attempt,
-                )
-                r["review"] = _review_sql(question, sql, defs)   # ★ 失败自愈路径：也追加逻辑自审报告
-                return r
-            # ── 自愈：把报错回喂模型，让它改 ──
-            fix_user_prompt = prompt.build_repair_prompt(question, sql, err)
-            fixed_raw = llm.chat(system_prompt, fix_user_prompt)
-            #                    ↑ 注意：用【同一个 system_prompt】
-            #                      这样它修的时候仍能看到表结构和规则，
-            #                      不会在修 A 错误的同时引入 B 错误
-            sql = _finalize_sql(fixed_raw)           # 修完还要再清洗 + 补前缀一遍
 
 
 # ═══════════════════════════════════════════════════════════
@@ -598,20 +429,206 @@ def _pre_execute_check(sql, ctx, resolved, allowed_tables, user=None, meta=None)
             "final_sql": final_sql}
 
 
-def ask_v2(index, question, user=None):
+def _build_system_prompt(sidx, ctx, resolved, question, exp_block="", sm_block=""):
+    """★ 组装 system prompt 的**唯一**位置（权威性从高到低）。
+
+    返回 (text, dict_names, dict_reason, parts)
+
+    ★ 为什么要收敛成一个函数？
+      改造前这里有 4 处手工 `system_prompt = system_prompt + ...`：
+        build_prompt_parts → 字典块 → 同名字段硬约束 → 经验块
+      顺序全靠这几十行代码的**书写顺序**保证，没有任何地方能一眼看出
+      "最终 prompt 到底长什么样"。顺序一旦被后来的改动插错位置
+      （比如把经验块插到指标口径前面），系统不会报错，只会**答错**，
+      而且极难排查 —— 这类"静默失效"本项目已经栽过一次（字典检索了却没注入）。
+
+    ★ 为什么用"逐段追加 + 记录 parts"，而不是拼一个 list 再 join？
+      join 会改变分隔符（某些段之间是一个换行、某些是两个），
+      而 prompt 的细微差异会实打实影响生成质量。
+      这里严格保持改造前的字节序，确保行为完全等价（有测试守着）。
     """
-    企业级流水线主入口。失败时由 ask() 回退到 ask_legacy。
+    # ① 角色 + 时间口径 + P0~P4 分层知识（权威性最高的部分）
+    role = config_store.get_prompt("role").format(dialect=config.SQL_DIALECT)
+    # ★ 日历/节假日感知：把「今天几号 + 时间表达解析出的公历区间」注入 Prompt，
+    #   避免模型对着「25号前7天 / 去年中秋节前7天」这类口径瞎猜或直接拒答。
+    time_context = calendar_util.build_time_context(question)
+    # ★ 配置分布类问题（“比例有几种搭配”）不套默认时间窗，否则会把全量配置
+    #   算成“近30天新增”，组合数直接变少。这是确定性的口径约束，不靠模型猜。
+    if needs_no_time_filter(question):
+        time_context += ("\n【口径约束】本问题问的是配置/比例的搭配分布，"
+                         "不是时间区间指标；除非用户明确要求，不要添加创建时间、"
+                         "订单时间等任何时间过滤条件。")
+    text = semantic_layer.build_prompt_parts(resolved, role, time_context=time_context)
+    parts = [("base(P0~P4)", text)]
+
+    # ② 数据字典（编码→中文）。放在 P0~P4 之后：它是"翻译表"，不是权威口径。
+    dict_names, dict_reason = rag.retrieve_dicts(sidx, question)
+    # ★★ 关键修复：把命中的字典【注入 System Prompt】。
+    #   此前 v2 只"检索"了字典（dict_names 只进 info/结果展示），
+    #   却从未拼进 prompt —— 导致"配了字典模型也看不到"，
+    #   用户用中文名提到某个取值（如「钻石会员」）时模型只能瞎猜或拒答。
+    #   legacy 路径一直是注入的，这里用同一个渲染函数补上，保持两条流水线行为一致。
+    dict_block = prompt._build_dict_block(
+        sidx.get("dicts") or [], dict_names, question,
+        tables=sidx.get("tables") or [], table_names=resolved.get("tables") or [])
+    if dict_block:
+        text = text + "\n\n# " + dict_block + "\n"
+        parts.append(("dicts", dict_block))
+    # ★ 运行时护栏（fail-loud）：字典召回了却拼不出块 = 接线断了。
+    #   这种"静默不生效"最容易骗过人工测试（页面正常、就是答不对），必须留下痕迹。
+    if dict_names and not dict_block:
+        print(f"⚠️ 字典已召回但未能注入 prompt（注入接线可能断了）：{dict_names}")
+
+    # ③ 系统级硬约束（同名字段跨表不得串味）
+    #   ★ 统一主流程在此显式拼一次硬约束块（build_hard_constraints_block 是共享组件，
+    #     不依赖任何已退役的旧 Prompt 组装函数）。
+    hard_block = prompt.build_hard_constraints_block(
+        sidx.get("tables") or [], resolved.get("tables") or [])
+    if hard_block:
+        text = text + "\n\n" + hard_block + "\n"
+        parts.append(("hard_constraints", hard_block))
+
+    # ③.5 语义模型约束（★ 审核通过的结构化语义，优先级高于经验参考、低于硬约束）
+    #   ★ 为什么放这里？经验是"参考"，语义模型是"已审核事实"——结构上必须高于经验。
+    #     sm_block 默认空串时零行为变化（字节序与接入前完全一致）。
+    if sm_block:
+        text = text + "\n\n" + sm_block + "\n"
+        parts.append(("semantic_model", sm_block))
+
+    # ④ 历史经验（★ 必须最后。经验是"参考"，结构上不允许它覆盖指标定义与 JOIN 铁律）
+    if exp_block:
+        text = text + "\n\n" + exp_block + "\n"
+        parts.append(("experience", exp_block))
+
+    return text, dict_names, dict_reason, parts
+
+
+def _merge_understanding_for_modify(new_u, modify_context):
+    """★ 增量修改：把「展示用理解」合并上轮上下文。
+
+    规则（只往"安全"方向合并，避免静默删除用户未明确改的条件）：
+      以本轮 understand 结果为底；
+      若某字段本轮未产出（空/缺），则用上一轮对应字段补全。
+    这样"去掉应用主体分组"时，本轮 dimensions=[月] 会被保留，不会回退成 [月,应用主体]；
+    而"再增加完成率"时，本轮若只识别到 [完成率]，展示仍可能只显示完成率
+    （SQL 已由 LLM 在完整上下文下正确生成，结果无误）—— 这是已知的可视化边界，不影响正确性。
+    """
+    base = (modify_context or {}).get("base_understanding") or {}
+    merged = dict(new_u or {})
+    for k, v in base.items():
+        if k not in merged or merged[k] in (None, "", [], {}):
+            merged[k] = v
+    return merged
+
+
+def _modify_prompt_block(question, modify_context):
+    """★ 增量修改上下文段：注入上一轮查询，约束 LLM 只改用户要求的部分。
+
+    必须以"保留未被修改部分"为硬约束，否则模型容易把上一轮指标/时间/过滤整个丢掉，
+    退化成"凭记忆重答"。同时点名一个高频陷阱：某字段既作分组又作等值过滤时，
+    去掉分组不能顺手删掉过滤（否则分组恒为单一值）。
+    """
+    base = (modify_context or {}).get("base_understanding") or {}
+    base_q = modify_context.get("base_question") or ""
+    base_sql = modify_context.get("base_sql") or ""
+    base_tables = modify_context.get("base_tables") or []
+    lines = [
+        "# 上一轮查询（本次为【增量修改】，请在上一轮基础上调整）",
+        "—— 你在处理一个「对已有查询做修改」的请求，不是从零开始的独立新问题"
+        "（除非本轮问题明显是全新主题，此时忽略上一轮）。",
+        "",
+        f"上一轮用户问题：{base_q}",
+        f"上一轮结构化意图：{json.dumps(base, ensure_ascii=False)}",
+        f"上一轮使用的数据表：{', '.join(base_tables)}" if base_tables else "",
+        f"上一轮生成的 SQL：{base_sql}" if base_sql else "上一轮生成的 SQL：（无）",
+        "",
+        "## 硬性约束（务必遵守）",
+        "1) 只按用户【明确要求】的修改调整；未被明确修改的指标、实体、时间范围、"
+        "过滤条件、分组维度必须【原样保留】，禁止因修改其中一个维度就清空其余已确认条件。",
+        "2) 禁止更换数据表、禁止更换字段、禁止改变 SUM/COUNT/COUNT DISTINCT 等聚合方式、"
+        "禁止改变 JOIN 关系——除非用户【明确要求】。即使你的知识库里有「看似更合适」的表或口径，"
+        "也不得擅自替换（若确有冲突，宁可保留原表并在输出里说明，不要静默换表）。",
+        "3) 若用户要求去掉某个分组维度，但该维度字段上同时存在一个等值过滤（例如 "
+        "app_entity_source = 0），除非用户明确要求「按该字段分别统计」或「只查看该值」，"
+        "否则【保留该过滤条件】——否则分组维度会变成分组恒为单一值的冗余分组。",
+        "4) 禁止新增/删除用户未提及的指标或过滤；重新生成完整 SQL 并重新经过校验。",
+    ]
+    return "\n".join(lines)
+
+
+def _dump_prompt(question, text, parts):
+    """把最终 system prompt 落盘（PROMPT_DUMP=1 时开启）
+
+    ★ 为什么需要这个开关？
+      排障时最常见的问题是「模型为什么这么写 SQL」。
+      改造前只能靠猜或者临时加 print —— 而 print 出来的东西又被
+      日志轮转吃掉、也没法逐段对比。落成文件就能直接 diff 两次改动的差异。
+      默认关闭：一次取数一个文件，长期开会把磁盘写满。
+    """
+    if not getattr(config, "PROMPT_DUMP", False):
+        return
+    try:
+        import hashlib as _h
+        import os as _os
+        import time as _t
+        d = getattr(config, "PROMPT_DUMP_DIR", "logs/prompt")
+        _os.makedirs(d, exist_ok=True)
+        ts = _t.strftime("%Y%m%d-%H%M%S")
+        tag = _h.sha1((question or "").encode("utf-8")).hexdigest()[:8]
+        path = _os.path.join(d, f"{ts}-{tag}.txt")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(f"# 问题\n{question}\n\n")
+            f.write(f"# 分段（共 {len(parts)} 段，合计 {len(text)} 字符）\n")
+            for name, seg in parts:
+                f.write(f"## {name}  {len(seg)} 字符\n")
+            f.write("\n# 最终 system prompt\n")
+            f.write(text)
+    except Exception as e:
+        print(f"⚠️ Prompt 落盘失败（不影响取数）：{e}")
+
+
+def ask_v2(index, question, user=None, understanding_override=None, modify_context=None,
+           want_answer=False, events=None, is_cancelled=None):
+    """
+    统一主流程主入口（双流水线已收敛，全仓唯一业务编排）。
     index = rag.build_index() 的结果（首次调用会自动 enrich 实体/关系/文档向量并缓存）。
     user  = 可信用户（dict，含 username / role）；非空时启用字段级权限闸门与结果脱敏。
+    understanding_override = 由【澄清模块】确认后的结构化意图（可选）。
+        多轮澄清确认了口径后，用它锁死指标，跳过 LLM 意图识别，避免再次猜口径。
+        为 None 时行为与改造前完全一致。
+    modify_context = 由【增量修改】带入的上一轮查询上下文（可选）。
+        当前窗口内用户对上一轮查询做自然语言修改时携带：保留未被明确修改的指标/
+        时间/过滤/维度，只对用户要求的部分重新生成 SQL。为 None 时行为与改造前一致。
+    events = 阶段事件回调（可选，SSE 改造新增）：形如 events(name, data)。
+        每个阶段边界调用一次，把"执行到哪一步"实时通知出去；为 None 时零行为变化。
+        eval / CLI / 评测直调 agent.ask 不传，签名与行为与改造前完全一致。
+    is_cancelled = 取消探测回调（可选）：返回 True 表示用户已取消，应在执行 SQL 前中止。
+        为 None 时永不取消（与改造前一致）。
     """
     # ── trace：记录各阶段耗时，供观测/排障 ──
     trace = []
+    # ★ 经验检索结果（提前初始化为 None：_rv 会在每个出口读它，
+    #   若在检索前就有失败分支返回（如指标未开放），读未赋值变量会直接 NameError）
+    exp_match = None
     _t = time.time()
     def _mark(name):
         nonlocal _t
         now = time.time()
         trace.append({"step": name, "ms": round((now - _t) * 1000, 1)})
         _t = now
+
+    # ★ SSE 阶段事件发射（可选）：events 为 None 时零开销、零行为变化
+    def _emit(name, data=None):
+        if events:
+            try:
+                events(name, data or {})
+            except Exception as e:
+                print(f"⚠️ 阶段事件发射失败（不影响取数）：{e}")
+
+    # ★ 取消探测（可选）：执行 SQL 这类重操作前检查，取消则抛 TaskCancelled
+    def _check_cancel(stage=""):
+        if is_cancelled and is_cancelled():
+            raise task_state.TaskCancelled(f"任务在「{stage}」阶段被用户取消")
 
     # ── 0. 语义索引增强（缓存，避免每次重建向量）──
     sidx = index.get("_semantic")
@@ -626,27 +643,101 @@ def ask_v2(index, question, user=None):
         meta = index.get("tables") or sidx.get("tables") or []
 
     # ① Query Understanding（意图 + 指标/实体识别）
-    understanding = query_understanding.understand(question, sidx)
+    #   ★ 多轮澄清：若上层已确认口径，直接用 override，不再让 LLM 重新理解
+    #     （否则上一轮用户选的指标可能被二次识别成别的，等于白确认）。
+    if understanding_override is not None:
+        understanding = understanding_override
+    else:
+        understanding = query_understanding.understand(question, sidx)
     _mark("understand")
+    _emit(task_state.EV_UNDERSTANDING, {
+        "intent": understanding.get("intent"),
+        "metrics": understanding.get("metrics") or [],
+        "entities": understanding.get("entities") or [],
+        "dimensions": understanding.get("dimensions") or [],
+        "time_range": understanding.get("time_range") or "",
+    })
+
+    # ★ 增量修改：把上一轮查询上下文并入「展示用理解」与系统提示，
+    #   保证未被用户明确修改的指标/时间/过滤/维度被保留，且 LLM 看到上轮完整 SQL。
+    #   （检索用理解见下方 retrieve_semantic 调用处：额外并入上轮指标/实体，
+    #    确保模型仍看得到原表结构；展示用理解见本处：新理解为底，缺的用上轮补全。）
+    if modify_context:
+        understanding = _merge_understanding_for_modify(understanding, modify_context)
+
+    # ★★ 状态链（七个状态分开记，绝不合并成一个"成功"）：
+    #   生成成功 ≠ 校验通过 ≠ 需求已核 ≠ 执行成功 ≠ 结果合理 ≠ 业务正确 ≠ 需求完成。
+    #   ★ 为什么用可变字典 + 出口快照？
+    #     ask_v2 有 10 多个 return 点，逐个手写 status_chain 必然漏（历史教训：
+    #     understanding 就是这样"只在成功分支补"，导致失败分支全空）。
+    #     这里让每个出口在 _rv 里拿一份【当下时刻】的快照，天然不会漏。
+    chain = {
+        "generated": False,             # 模型是否产出了可执行语句
+        "gate_passed": False,           # 只读 + 表权限 + 五维校验 + 字段权限是否全过
+        "requirement_verdict": "skipped",  # pass/fail/unsure/skipped（"跑过"≠"通过"）
+        "executed": False,              # 是否真的执行了 SQL
+        "exec_ok": False,               # 是否拿到结果集
+        "result_sane": None,            # 结果体检是否无疑点（None=没跑到这一步）
+        "business_verified": None,      # 事后回填：人工审核 approved
+        "requirement_fulfilled": None,  # 事后回填：用户确认结果对
+        "requirement_attempts": 0,      # 需求审核触发了几次定向修复
+    }
+    # ★ 需求契约/审核结果的"可变容器"：必须在 _rv 定义之前创建，
+    #   否则任何在生成之前就返回的分支（指标未开放、零召回）读它会 NameError。
+    req_state = {"contract": None, "result": None, "blocked": False}
 
     def _rv(*args, **kw):
         """ask_v2 的统一出口：自动带上查询理解与流水线标记。
 
         ★ 为什么要包一层？以前是在"成功分支"里手动补 understanding，
-          结果**每个失败分支都漏**（拒答/拦截时前端查询理解一片空白，
-          用户没法判断是理解错了还是知识库缺东西）。包一层就不会再漏。
+          结果**所有失败分支都漏**（拒答/拦截时前端查询理解一片空白，
+          用户就没法判断"是模型理解错了还是知识库缺东西"）。
+          放进统一的出口里，就不会再有人漏掉。
         ★ 用 *args 透传给 _result：各调用点都写成 _rv(question, ...)，
           签名写成 _rv(**kw) 会漏掉第一个位置参数（实测直接 TypeError，
           再被 ask() 静默回退到 legacy —— 症状是"结果看着对但 pipeline=legacy"）。
         """
         kw.setdefault("understanding", understanding)
         kw.setdefault("pipeline", "v2")
+        # ★ 经验命中情况随每个出口返回。同时把「原始 match 对象」挂在私有字段上，
+        #   供服务端在落库拿到 record_id 后补一条使用日志（响应体里不会出现该字段）。
+        kw.setdefault("experience", exp_match.summary() if exp_match is not None else None)
+        kw.setdefault("_exp_match", exp_match)
+        # ★ 状态链快照：dict(chain) 复制一份，避免后续阶段推进把已返回的结果也改掉
+        kw.setdefault("status_chain", dict(chain))
+        # ★ 需求审核结果随每个出口返回（用 req_state 取值：它在本函数很早处就存在，
+        #   任何早退分支读它都不会 NameError）
+        kw.setdefault("req_review", req_state["result"])
         return _result(*args, **kw)
 
 
     # ② Semantic Router + 多路检索（P0~P4 分层）
-    ctx = semantic_layer.retrieve_semantic(sidx, question, understanding)
+    #   ★ 增量修改：检索用理解额外并入上一轮指标/实体，确保模型仍能看到原表结构
+    #     （用户只说"去掉应用主体分组"时，新问题可能不再点名原指标，召回不能丢表）。
+    if modify_context:
+        _retrieval_u = dict(understanding or {})
+        _base_u = (modify_context.get("base_understanding") or {})
+        for _k in ("metrics", "entities", "tables"):
+            _bv = _base_u.get(_k) or []
+            _nv = _retrieval_u.get(_k) or []
+            _mv = list(_nv) + [v for v in _bv if v not in _nv]
+            if _mv:
+                _retrieval_u[_k] = _mv
+        # ★ P0-4：原 SQL 实际使用的表必须优先保留，不得因本轮实体识别缺失/跨业务线
+        #   过滤被排除。把 base_tables 显式并入检索表集合（带去库前缀的原始表名）。
+        _bt = (modify_context.get("base_tables") or [])
+        if _bt:
+            _cur = _retrieval_u.get("tables") or []
+            _retrieval_u["tables"] = list(_cur) + [t for t in _bt if t not in _cur]
+        ctx = semantic_layer.retrieve_semantic(sidx, question, _retrieval_u)
+    else:
+        ctx = semantic_layer.retrieve_semantic(sidx, question, understanding)
     _mark("retrieve")
+    _emit(task_state.EV_RETRIEVAL, {
+        "tables": ctx.p3_tables or [],
+        "metrics": ctx.p1_metrics or [],
+        "route": getattr(ctx, "route_info", ""),
+    })
 
     # ①.5 指标级权限：问的是未开放指标 → 拒绝
     blocked_metric = rag.match_disabled_metric(sidx, question)
@@ -661,42 +752,79 @@ def ask_v2(index, question, user=None):
                        error="未识别到相关数据表/指标，已拦截（防止模型编造）",
                        info=ctx.route_info)
 
-    # ③ 冲突解决 + 分层 Prompt 组装（role → 时间口径 → P0→P1→P2→P3→P4）
+    # ③ 冲突解决 + 分层 Prompt 组装（role → 时间口径 → P0→P1→P2→P3→P4 → 字典 → 硬约束 → 经验）
+    #   ★ 组装逻辑已收敛到 _build_system_prompt（唯一位置），这里只负责"按什么顺序调"。
     resolved = semantic_layer.resolve(ctx)
-    role = config_store.get_prompt("role").format(dialect=config.SQL_DIALECT)
-    # ★ 日历/节假日感知：把「今天几号 + 时间表达解析出的公历区间」注入 Prompt，
-    #   避免模型对着「25号前7天 / 去年中秋节前7天」这类口径瞎猜或直接拒答。
-    time_context = calendar_util.build_time_context(question)
-    # ★ 配置分布类问题（“比例有几种搭配”）不套默认时间窗，否则会把全量配置
-    #   算成“近30天新增”，组合数直接变少。这是确定性的口径约束，不靠模型猜。
-    if needs_no_time_filter(question):
-        time_context += ("\n【口径约束】本问题问的是配置/比例的搭配分布，"
-                         "不是时间区间指标；除非用户明确要求，不要添加创建时间、"
-                         "订单时间等任何时间过滤条件。")
-    system_prompt = semantic_layer.build_prompt_parts(
-        resolved, role, time_context=time_context)
 
-    # ③.5 数据字典（编码→中文，P4 之外的补充线，复用现有）
-    dict_names, dict_reason = rag.retrieve_dicts(sidx, question)
-    # ★★ 关键修复：把命中的字典【注入 System Prompt】。
-    #   此前 v2 只"检索"了字典（dict_names 只进 info/结果展示），
-    #   却从未拼进 prompt —— 导致"配了字典模型也看不到"，
-    #   用户用中文名提到某个取值（如「钻石会员」）时模型只能瞎猜或拒答。
-    #   legacy 路径一直是注入的（prompt.build_system_prompt(..., dicts, dict_names)），
-    #   这里用同一个渲染函数补上，保持两条流水线行为一致。
-    dict_block = prompt._build_dict_block(sidx.get("dicts") or [], dict_names, question)
-    if dict_block:
-        system_prompt = system_prompt + "\n\n# " + dict_block + "\n"
-    # ★ 运行时护栏（fail-loud）：字典召回了却拼不出块 = 接线断了。
-    #   这种"静默不生效"最容易骗过人工测试（页面正常、就是答不对），必须留下痕迹。
-    if dict_names and not dict_block:
-        print(f"⚠️ 字典已召回但未能注入 prompt（注入接线可能断了）：{dict_names}")
+    # ③.1 ★ 语义上下文审计（只观测、不阻断）：用统一注册表核对本次命中知识的治理状态。
+    #   严格模式下 candidate/停用对象本不该混入；这里只打日志与 info 摘要，绝不拦截取数。
+    _ctx_audit = {}
+    try:
+        _ctx_audit = semantic_builder.audit_context(ctx)
+    except Exception as _e:
+        print(f"⚠️ 语义上下文审计失败（不影响取数）：{_e}")
+
+    # ③.7 ★ SQL 经验检索（成功案例参考 / 失败经验预防 / 已发布规则）
+    #   为什么先检索再组装？因为经验块要作为【最后一段】拼进 prompt。
+    #   为什么整段包 try？经验是加分项，它挂了最多"这次没参考到历史"，
+    #   绝不能让取数本身失败。
+    if getattr(config, "EXP_ENABLED", True):
+        try:
+            exp_match = sql_experience.retrieve(
+                sidx, question, understanding, resolved,
+                allowed_tables=sidx.get("allowed_tables") or [], user=user,
+                # ★ 增量修改：检索时带上上一轮问题。
+                #   "再加完成率"这种 5 字问句，单靠自身做向量检索几乎召不回真正的
+                #   基线案例（问句太短、语义信息不足），等于每轮都在从零参考经验。
+                context_question=((modify_context or {}).get("base_question") or "")
+                if getattr(config, "EXP_MODIFY_CTX", True) else "")
+        except Exception as e:
+            print(f"⚠️ 经验检索失败（不影响取数）：{e}")
+            exp_match = None
+
+    # ③.5 ★ 业务域语义约束注入（第六步：业务域识别 → 语义对象获取 → 注入）
+    #   ★ 命中业务域/主题 → 动态组装审核通过的语义对象作为权威约束（优先级高于经验参考）；
+    #     未命中 / 开关关闭 → 空串，行为与接入前完全一致。
+    #     整段包 try：语义注入是加分项，绝不能让取数本身失败。
+    sm_block = ""
+    if getattr(config, "SEMANTIC_MODEL_ENABLED", False):
+        try:
+            sm_block = business_domain_service.build_context_block(
+                sidx, question, understanding, ctx)
+        except Exception as e:
+            print(f"⚠️ 业务域语义注入失败（不影响取数）：{e}")
+            sm_block = ""
+
+    system_prompt, dict_names, dict_reason, _pparts = _build_system_prompt(
+        sidx, ctx, resolved, question,
+        exp_block=(exp_match.prompt_block if exp_match is not None else ""),
+        sm_block=sm_block)
+    _dump_prompt(question, system_prompt, _pparts)
+
+    # ★ 增量修改：把上一轮查询上下文作为独立段落注入系统提示，
+    #   让 LLM 在"保留未被修改部分"的前提下只改用户要求的部分。
+    if modify_context:
+        system_prompt = system_prompt + "\n\n" + _modify_prompt_block(question, modify_context)
+
     tsum = calendar_util.summary_line(question)
     info = f"{ctx.route_info} | 字典:{dict_reason}" + (f" | {tsum}" if tsum else "")
+    info += semantic_builder.audit_summary(_ctx_audit)
     _mark("resolve_prompt")
 
     # ④ SQL Agent：生成 SQL
-    raw_sql = llm.chat(system_prompt, question)
+    #   ★ 唯一例外：问题与某条「正式黄金 SQL」完全一致，且开关打开 → 直接采用它作为候选。
+    #     采用后仍然要过下面的 ⑤ 校验闸门（校验的 SQL == 执行的 SQL 这条铁律不变），
+    #     所以"复用"不等于"免检"。默认关闭（EXP_EXACT_REUSE=0），待评测后再决定是否开启。
+    _check_cancel("SQL生成")
+    _emit(task_state.EV_SQL_GENERATING, {"tables": ctx.p3_tables or []})
+    raw_sql = ""
+    if (exp_match is not None and exp_match.decision == "direct_reuse"
+            and getattr(config, "EXP_EXACT_REUSE", False)
+            and (exp_match.best_case or {}).get("sql_raw")):
+        raw_sql = exp_match.best_case["sql_raw"]
+        info += f" | 精确复用:{exp_match.best_case.get('case_no')}"
+    if not raw_sql:
+        raw_sql = llm.chat(system_prompt, question)
     sql = _finalize_sql(raw_sql)
     _mark("generate")
     _refuse = _refusal_reason(sql)
@@ -707,16 +835,110 @@ def ask_v2(index, question, user=None):
                    tables=ctx.p3_tables, metrics=resolved["metrics"],
                    dicts=dict_names, info=info)
 
+    # ④.9 ★ 需求契约：把"这次查询必须满足什么"固化下来
+    #   ★ 只用于【判定】，绝不参与 SQL 生成 —— 模型仍然完全自主生成，
+    #     本步只是把用户的要求写成可比对的期望（指标/维度/过滤/时间/替换对）。
+    #   ★ enabled_for 是成本闸门：modify_only 模式下，普通首轮查询根本不建契约，
+    #     等于零开销、零行为变化。
+    if requirement_review.enabled_for(question, modify_context):
+        try:
+            req_state["contract"] = requirement_review.build_contract(
+                question, understanding, modify_context)
+        except Exception as e:
+            print(f"⚠️ 需求契约构建失败（不影响取数）：{e}")
+            req_state["contract"] = None
+
+    # ★ 到这里才算"生成成功"（拒答/非查询语句在上面已经 return）
+    chain["generated"] = True
+    _emit(task_state.EV_SQL_VALIDATING, {"sql": sql})
+
     # ⑤ SQL Validator：生成后、执行前 5 维校验 + 自愈回灌
     allowed_tables = sidx["allowed_tables"]
     last_check = None
     last_issues = []
+    fix_calls = 0                       # ★ 自动定点修复次数（任务书要求最多一次）
+    modify_violated = False             # ★ 修改任务是否越界（未授权结构变更且修复未果）
     for attempt in range(1, config.MAX_RETRY + 1):
-        # ★ 统一闸门：只读 + 表权限 + 五维校验，一次调用全部覆盖
+        # ★ 统一闸门：只读 + 表权限 + 五维校验 + 字段权限，一次调用全部覆盖
         chk = _pre_execute_check(sql, ctx, resolved, allowed_tables, user=user, meta=meta)
         last_check = chk
         last_issues = chk["issues"]
         if chk["ok"]:
+            chain["gate_passed"] = True
+            # ── ⑤.0 ★ SQL 修改结构保护（P0）：增量修改默认继承原 SQL 业务逻辑 ──
+            #   ★ 只允许改用户【明确要求】的部分；表/聚合/业务过滤/分组等未授权变化一律拦截。
+            #     自愈修复也会重跑这里（在循环内），保证「每次自愈都再次结构校验」。
+            if modify_context and (modify_context.get("base_sql") or ""):
+                _diff = sql_modify.diff_structure(modify_context["base_sql"], sql)
+                _unauth = sql_modify.unauthorized_changes(_diff, question)
+                if _unauth:
+                    last_issues = [{
+                        "severity": "error", "tier": "P0", "rule": "modify_scope",
+                        "message": "修改越界（未授权变更）：" + "、".join(_unauth),
+                        "suggestion": sql_modify.format_diff(_diff),
+                    }]
+                    if attempt >= config.MAX_RETRY or fix_calls >= config.MAX_AUTO_FIX:
+                        modify_violated = True
+                        break       # 修复次数用尽 → 循环外统一拒绝执行
+                    # 受约束定点修复：把越界项回灌，要求恢复原结构（只改授权部分）
+                    fix_user = sql_modify.build_repair_prompt(
+                        question, modify_context["base_sql"], sql, _unauth, _diff)
+                    fix_calls += 1
+                    fixed_raw = llm.chat(system_prompt, fix_user)
+                    sql = _finalize_sql(fixed_raw)
+                    info += " | 修改越界修复:%d" % fix_calls
+                    continue        # 修复后重过完整闸门 + 结构校验（下一轮循环）
+            # ── ⑤.1 ★ 需求一致性审核（第六维，必须排在安全闸门【之后】）──
+            #   ★ 顺序不可交换：越权/写操作永远先被拒，
+            #     绝不能因为"模型说这是用户要的"而放行一条未授权 SQL。
+            if req_state["contract"] is not None:
+                q_sql = chk.get("final_sql") or sql     # 判"真正要执行的那条"
+                # ★ 把历史经验摘要一起喂给审核：
+                #   让"生成"和"审核"看到同一批证据，否则会出现
+                #   "生成时参考了黄金 SQL，审核时却说写法不对"的自相矛盾。
+                _digest = ""
+                if exp_match is not None:
+                    try:
+                        _digest = exp_match.audit_digest()
+                    except Exception as e:
+                        print(f"⚠️ 经验摘要生成失败（不影响审核）：{e}")
+                req_result = requirement_review.review(
+                    q_sql, req_state["contract"],
+                    exp_digest=_digest,
+                    validator_issues=chk["issues"],
+                    base_question=(modify_context or {}).get("base_question", ""),
+                    base_sql=(modify_context or {}).get("base_sql", ""))
+                req_state["result"] = req_result
+                # ★ degraded（判不了）只在"没有硬错误"时才记 skipped；
+                #   若确定性层已经抓到 error，那结论是可信的 fail，不能被降级成 skipped。
+                if req_result.get("degraded") and req_result["verdict"] != "fail":
+                    chain["requirement_verdict"] = "skipped"
+                else:
+                    chain["requirement_verdict"] = req_result["verdict"]
+
+                _req_block = getattr(config, "REQ_REVIEW_BLOCK", False)
+                # ── unsure：需求本身不明确 → 改 SQL 没用，直接停下去问用户 ──
+                if _req_block and req_result["verdict"] == "unsure":
+                    req_state["blocked"] = True
+                    req_state["block_reason"] = "unsure"
+                    break
+                if (_req_block and req_result["verdict"] == "fail"
+                        and req_result.get("errors")):
+                    if attempt >= config.MAX_RETRY or fix_calls >= config.MAX_AUTO_FIX:
+                        req_state["blocked"] = True
+                        req_state["block_reason"] = "fail"
+                        break       # 修复次数用尽 → 循环外统一拒绝执行
+                    # 把具体问题回灌给模型，让它【自主】改（不由系统改写 SQL）
+                    fix_user = prompt.build_requirement_repair_prompt(
+                        question, sql, req_result["issues"],
+                        base_question=(modify_context or {}).get("base_question", ""),
+                        base_sql=(modify_context or {}).get("base_sql", ""))
+                    fix_calls += 1                      # ★ 计一次定点修复
+                    fixed_raw = llm.chat(system_prompt, fix_user)
+                    sql = _finalize_sql(fixed_raw)
+                    chain["requirement_attempts"] += 1
+                    info += " | 需求一致性修复:%d" % chain["requirement_attempts"]
+                    continue        # 修完必须重过完整闸门 + 重审（下一轮循环）
             break  # 通过校验
         if chk["hard"]:
             # 安全类问题不允许"自愈"绕过：直接拒绝
@@ -725,6 +947,8 @@ def ask_v2(index, question, user=None):
                        dicts=dict_names, info=info, attempts=attempt)
         if attempt >= config.MAX_RETRY:
             break  # 用尽重试（是否执行由循环【之后】的闸门统一判定，见下）
+        if fix_calls >= config.MAX_AUTO_FIX:
+            break  # ★ 定点修复次数用尽（任务书要求最多一次），不再无限自愈
         # 自愈：把校验问题回灌模型修正
         #   ★ 必须带上【原始问题 + 上一版 SQL】：否则模型看不到用户要什么，
         #     会"修好语法、丢了语义"（实测：按月的查询被自愈成总数，月份维度整个丢失）。
@@ -732,6 +956,7 @@ def ask_v2(index, question, user=None):
                     f"你上一版 SQL：\n{sql}\n\n"
                     f"该 SQL 未通过校验。请在【保持原问题统计口径与分组维度不变】的前提下，"
                     f"仅修正下列问题后只输出 SQL：\n" + _format_issues(chk["issues"]))
+        fix_calls += 1                      # ★ 计一次定点修复
         fixed_raw = llm.chat(system_prompt, fix_user)
         sql = _finalize_sql(fixed_raw)
 
@@ -752,12 +977,105 @@ def ask_v2(index, question, user=None):
         r["trace"] = trace
         return r
 
+    # ★★ 修改越界闸门（fail-closed）：增量修改时，模型改了未授权的结构且修复未果 → 拒绝执行。
+    #   ★ 保护原 SQL 业务逻辑：不能因为模型"重解释"就换表/换口径/换聚合。
+    if modify_violated:
+        r = _rv(question, sql=sql, ok=False,
+                error="本次为【增量修改】，但生成的 SQL 变更了未授权的部分"
+                      "（如表/聚合方式/业务过滤/分组），且自动修复后仍未恢复，"
+                      "已拒绝执行以保护原查询业务逻辑。请重新描述本次要修改的具体内容。",
+                tables=ctx.p3_tables, metrics=resolved["metrics"],
+                dicts=dict_names, info=info, attempts=attempt)
+        r["validation"] = last_issues
+        r["validation_status"] = "blocked"
+        r["result_warnings"] = []
+        r["modify_violation"] = last_issues   # ★ 结构差异详情，供前端展示
+        _mark("validate_rejected")
+        r["trace"] = trace
+        return r
+
+    # ★★ 需求闸门（fail-closed）：安全检查全过，但"没答对问题"且修复用尽 → 拒绝执行。
+    #   ★ 与上面那段分开，是为了让用户能分清"SQL 不合法"和"SQL 合法但不是我要的"——
+    #     这两种失败的处理方式完全不同（前者补知识库，后者补充需求/确认歧义）。
+    if req_state["blocked"]:
+        _reason = req_state.get("block_reason") or "fail"
+        _err = ("SQL 虽通过安全与口径校验，但本次需求本身存在歧义、无法确认，"
+                "已暂停执行，请确认下面的问题后再查。"
+                if _reason == "unsure" else
+                "SQL 虽通过安全与口径校验，但未满足本次查询要求（已重试仍未达标），"
+                "已拒绝执行，避免给出不符合需求的结果。")
+        r = _rv(question, sql=sql, ok=False, error=_err,
+                tables=ctx.p3_tables, metrics=resolved["metrics"],
+                dicts=dict_names, info=info, attempts=attempt)
+        r["validation"] = last_issues
+        r["validation_status"] = last_check["status"] if last_check else "error"
+        r["result_warnings"] = []
+        # ★ 说明"我卡在哪、需要你确认什么"——比只回一句"已拒绝执行"有用得多
+        try:
+            _sem = (req_state["result"] or {}).get("semantic") or {}
+            r["needs_clarification"] = requirement_review.build_clarification(
+                req_state["contract"],
+                (req_state["result"] or {}).get("issues") or [],
+                verdict=_reason,
+                assumptions=_sem.get("assumptions") or [])
+        except Exception as e:
+            print(f"⚠️ 歧义说明生成失败（不影响拒绝本身）：{e}")
+            r["needs_clarification"] = None
+        # ★ 失败经验回流：只在这种"确定没满足需求、且没执行"的情况下写。
+        #   灰度期（BLOCK=0）不写 —— 那时 fail 里混着误报，写进去会污染经验库。
+        if (getattr(config, "REQ_FAIL_RECORD", True) and sql
+                and _reason != "unsure"):
+            try:
+                sql_experience.record_requirement_failure(
+                    question, sql, (req_state["result"] or {}).get("issues") or [],
+                    tables=ctx.p3_tables, metrics=resolved.get("metrics") or [],
+                    understanding=understanding)
+            except Exception as e:
+                print(f"⚠️ 需求失败经验写入失败（不影响拒绝）：{e}")
+        _mark("requirement_rejected")
+        r["trace"] = trace
+        return r
+
     # ★ 行级改写后，实际执行的 SQL 以闸门返回的 final_sql 为准（执行 SQL == 校验 SQL）
     sql = (last_check or {}).get("final_sql") or sql
+
+    # ⑤.5 ★ 失败经验辅助校验（生成后、执行前）
+    #   只做**确定性**检查（指纹相同 / 命中历史错表 / 缺状态条件），不调模型、不猜。
+    #   ★ 默认只提示不拦截：经验检查的误报一旦能阻断执行，就会变成"新的事故来源"。
+    #     只有 EXP_FAIL_REPAIR=1（评测 C/D 组）时，才对 error 级命中做一轮定向修复。
+    exp_issues = []
+    if exp_match is not None and getattr(config, "EXP_FAIL_PREVENT", True):
+        try:
+            exp_issues = sql_experience.check_sql(sql, exp_match)
+        except Exception as e:
+            print(f"⚠️ 失败经验检查失败（不影响取数）：{e}")
+            exp_issues = []
+        if exp_issues and getattr(config, "EXP_FAIL_REPAIR", False) and any(
+                i.get("severity") == "error" for i in exp_issues):
+            try:
+                hint = sql_experience.build_repair_hint(exp_issues)
+                fix_user = (f"原始问题：{question}\n\n你上一版 SQL：\n{sql}\n\n"
+                            f"该 SQL 命中了历史错误经验。请在【保持统计口径与分组维度不变】的"
+                            f"前提下，修正下列问题后只输出 SQL：\n{hint}")
+                fixed = _finalize_sql(llm.chat(system_prompt, fix_user))
+                chk2 = _pre_execute_check(fixed, ctx, resolved, allowed_tables,
+                                          user=user, meta=meta)
+                # ★ 修复版必须重新过闸门才算数；不通过就保留原 SQL（不能"越修越松"）
+                if chk2["ok"]:
+                    sql = chk2.get("final_sql") or fixed
+                    last_check = chk2
+                    last_issues = chk2["issues"]
+                    exp_issues = sql_experience.check_sql(sql, exp_match)
+                    info += " | 经验修复:1次"
+            except Exception as e:
+                print(f"⚠️ 经验定向修复失败（沿用原 SQL）：{e}")
 
     _mark("validate")
 
     # ⑥ ClickHouse 执行（★ 必须走唯一出口 _exec_sql：拒答/非查询语句绝不可能被执行）
+    _check_cancel("SQL执行")
+    _emit(task_state.EV_SQL_EXECUTING, {"sql": sql})
+
     def _rejected(reason, attempts=0):
         """闸门拦下时的统一返回（不执行、不重试）"""
         r = _rv(question, sql=sql, ok=False, error=reason,
@@ -766,12 +1084,15 @@ def ask_v2(index, question, user=None):
         r["validation"] = last_issues
         r["validation_status"] = last_check["status"] if last_check else "error"
         r["result_warnings"] = []
+        r["experience_warnings"] = exp_issues
         _mark("not_executable")
         r["trace"] = trace
         return r
 
     try:
+        chain["executed"] = True        # ★ 真的走到执行（与 ok 分离：执行了不代表拿到结果）
         columns, rows = _exec_sql(sql)
+        chain["exec_ok"] = True
     except NotExecutable as ne:
         return _rejected(str(ne))
     except Exception as e:
@@ -812,7 +1133,9 @@ def ask_v2(index, question, user=None):
             # ★ 自愈 SQL 通过闸门后，同样以 final_sql（可能含行级改写）为准执行
             sql = chk.get("final_sql") or sql
             try:
+                chain["executed"] = True
                 columns, rows = _exec_sql(sql)
+                chain["exec_ok"] = True
                 break
             except NotExecutable as ne:
                 # ★ 自愈后模型改口"无法回答" → 也必须停下，不能当执行错误继续重试
@@ -844,11 +1167,48 @@ def ask_v2(index, question, user=None):
     warnings = result_validator.validate_result(
         columns, rows, resolved, question,
         expected_multi_row=bool(understanding.get("dimensions")))
+    # ★ 结果体检结论进状态链：执行成功 ≠ 结果可信（比率越界/整列 NULL 都是"有数但可疑"）
+    chain["result_sane"] = not bool(warnings)
 
-    # ⑧ 自然语言回答
+    # ⑧ 自然语言回答 ＋ 事后自审（★ 并行）
+    #
+    # ★ 为什么把这两件事并行？
+    #   两者【互不依赖】：一个把结果翻成人话，一个是事后逻辑诊断；
+    #   它们只共享 metric_defs，谁都不读对方的结果。
+    #   串行时实测 1.9s + 5.0s ≈ 6.9s；并行后 ≈ max(1.9, 5.0) ≈ 5.0s，
+    #   一次取数省掉 1.9 秒，且返回结构一字未改（前端无需改动）。
+    #
+    # ★ 为什么不用 asyncio？
+    #   本模块是纯同步代码（agent 被 CLI / 评测 / ablation 直接调用），
+    #   引入 async 会把调用方全部染色。线程池只影响这两次 IO 等待。
+    #
+    # ★ 为什么 nl 的异常照旧往上抛、review 的异常吞掉？
+    #   保持原语义：nl 是主结果的一部分（失败就是这次取数失败），
+    #   review 是加分项（_review_sql 内部已 try，即使这里抛也不该影响结果）。
     metric_defs = "\n".join(m.get("definition", "") for m in ctx.p1_metrics)
-    nl = nl_answer.answer(question, columns, rows, metric_defs,
-                          understanding.get("ambiguity", ""))
+    ambiguity = understanding.get("ambiguity", "")
+    # ★ 分层自审：按风险等级决定是否/如何做 LLM 逻辑自审（LOW 跳过 / MEDIUM 轻量 / HIGH 深度）
+    risk = _sql_risk_level(sql, ctx, resolved, last_check)
+    nl, review = "", None
+    # ★ 默认不再生成自然语言回答（want_answer=False）：改为前端「生成结论」按钮按需调用，
+    #   省掉每次取数都多一次 LLM 往返。逻辑自审（review）按 risk 分层触发。
+    if want_answer:
+        if getattr(config, "TAIL_PARALLEL", True):
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2,
+                                                       thread_name_prefix="tail") as ex:
+                f_nl = ex.submit(nl_answer.answer, question, columns, rows,
+                                 metric_defs, ambiguity)
+                f_rv = ex.submit(_review_sql, question, sql, metric_defs, risk=risk)
+                nl = f_nl.result()                  # nl 的异常照旧抛出
+                try:
+                    review = f_rv.result()
+                except Exception as e:
+                    print(f"⚠️ SQL 逻辑自审失败（不影响主结果）：{e}")
+        else:
+            nl = nl_answer.answer(question, columns, rows, metric_defs, ambiguity)
+            review = _review_sql(question, sql, metric_defs, risk=risk)
+    else:
+        review = _review_sql(question, sql, metric_defs, risk=risk)
 
     # ★ 换表说明：用户点名表 vs SQL 实际用表（见 _table_swap_note）
     swap = _table_swap_note(question, sql, sidx, ctx)
@@ -859,11 +1219,16 @@ def ask_v2(index, question, user=None):
                 tables=ctx.p3_tables, metrics=resolved["metrics"],
                 dicts=dict_names, info=info, attempts=attempt)
     r["table_swap"] = swap                              # ★ 独立字段，前端可高亮
-    r["review"] = _review_sql(question, sql, metric_defs)   # 保留既有逻辑自审（事后复核）
+    r["review"] = review                                    # 保留既有逻辑自审（事后复核）
+    r["sql_risk"] = risk                                    # ★ 分层自审风险等级（LOW/MEDIUM/HIGH，可观测）
     r["validation"] = last_issues                           # SQL 校验报告
     r["validation_status"] = last_check["status"] if last_check else "error"
     r["result_warnings"] = warnings                         # 结果校验 warning
+    # ★ 经验辅助校验结果（失败模式命中）；空列表 = 没命中，前端不用展示
+    r["experience_warnings"] = exp_issues
     r["answer"] = nl                                        # 自然语言回答
+    r["nl_meta"] = {"metric_defs": metric_defs,             # ★ 供前端「生成结论」按钮按需调用
+                    "ambiguity": ambiguity}
     r["perm_decision"] = perm_decision                      # ★ 字段级权限判定（供审计/前端）
     r["masked"] = bool(mask_map)                            # ★ 是否发生结果脱敏
     r["mask_map"] = mask_map                                # ★ {列名: 脱敏规则}
@@ -872,70 +1237,51 @@ def ask_v2(index, question, user=None):
     return r
 
 
-# ── 可回退的"可恢复故障"白名单：只有基础设施类的瞬时故障才允许降级 legacy ──
-#   ★ 为什么白名单这么窄？
-#     legacy 是"校验更弱"的旧流程。若 V2 的【逻辑/校验】异常也回退，
-#     就等于把"校验没通过"偷偷降级成"不校验地执行"—— 这正是审查报告点名的风险。
-#     所以只有与业务逻辑无关的瞬时故障（超时/连接）才允许回退。
-_RECOVERABLE_ERRORS = (TimeoutError, ConnectionError)
+def ask(index, question, user=None, understanding_override=None, modify_context=None,
+        want_answer=False, events=None, is_cancelled=None):
+    """对外统一入口：全仓唯一生产取数主流程（ask_v2）。
 
-
-def _is_recoverable(e):
-    """异常是否属于白名单内的可恢复故障（允许降级 legacy）"""
-    if isinstance(e, _RECOVERABLE_ERRORS):
-        return True
-    msg = str(e).lower()
-    return any(k in msg for k in ("timed out", "timeout", "connection refused",
-                                  "connection reset", "temporarily unavailable"))
-
-
-def ask(index, question, user=None):
-    """对外统一入口：优先走企业级流水线 ask_v2。
-
-    ★ fail-closed 降级策略（见 config.LEGACY_FALLBACK_MODE）：
-      V2 抛异常时【默认不再无脑回退 legacy】。原因有二：
-        ① legacy 校验更弱，静默回退会把"校验失败"变成"不校验地执行"；
-        ② 静默降级会让监控指标失真（看不出 V2 到底稳不稳）。
-      仅 whitelist 模式下的可恢复故障（超时/连接）才降级，且结果里留痕
-      （pipeline/degraded/degrade_reason/degrade_stage），便于统计与告警。
+    ★ 双流水线已收敛（P0 专项）：Legacy 兜底路径已退役，不再存在。
+      任何异常一律【fail-closed】如实返回，绝不降级到弱校验路径——
+      瞬时故障（超时/连接）应由连接层自愈（ssh_tunnel.ensure_tunnel）
+      与 `_exec_sql` 的重试消化，而不是靠"换一条更弱的流水线"掩盖。
+      这样既保证「只有一套业务编排逻辑」，也保证监控指标不失真。
 
     user  = 可信用户（dict，含 username / role）；非空时启用字段级权限闸门。
             生产链路 server.api_ask 总是传入；eval/CLI 不传（无真实用户权限语义）。
+    understanding_override = 澄清模块确认后的意图（可选，锁口径用）。
+    modify_context = 增量修改上下文（可选，见 ask_v2）。
+    events = 阶段事件回调（可选，SSE 改造新增）：透传给 ask_v2。
+    is_cancelled = 取消探测回调（可选）：透传给 ask_v2，用户取消时中止执行。
     """
     try:
-        return ask_v2(index, question, user=user) if user is not None else ask_v2(index, question)
+        return ask_v2(index, question, user=user,
+                      understanding_override=understanding_override,
+                      modify_context=modify_context, want_answer=want_answer,
+                      events=events, is_cancelled=is_cancelled)
+    except task_state.TaskCancelled as tc:
+        # ★ 用户主动取消：不是错误，如实返回"已取消"，绝不 fail-closed 成"异常"
+        r = _result(question, sql="", ok=False, error=f"已取消：{tc}", pipeline="v2")
+        r["cancelled"] = True
+        return r
     except Exception as e:
-        mode = getattr(config, "LEGACY_FALLBACK_MODE", "whitelist")
-        app_env = getattr(config, "APP_ENV", "production")
-
-        # ★ 生产环境禁止 always：always 会把"业务校验异常/程序 bug"也回退到弱校验的
-        #   legacy 路径，等于静默绕过强校验。这里强制收敛为 whitelist（fail-closed）。
-        if mode == "always" and app_env == "production":
-            print("⛔ 生产环境禁止 LEGACY_FALLBACK_MODE=always，已按 whitelist 处理")
-            mode = "whitelist"
-
+        # fail-closed：不执行任何未经统一闸门校验的结果，把异常如实暴露出来
         reason = f"{type(e).__name__}: {e}"
-        recoverable = _is_recoverable(e)
-        allow = (mode == "always") or (mode == "whitelist" and recoverable)
-        if allow:
-            # ★ 日志要说真话：只有真的命中白名单才叫"可恢复故障"；
-            #   always 模式下哪怕 ValueError 也会回退，不能伪装成可恢复。
-            kind = "可恢复故障" if recoverable else f"always 模式强制回退（{app_env}）"
-            print(f"⚠️ V2 异常（{kind}：{reason}），按 mode={mode} 回退 legacy")
-            r = (ask_legacy(index, question, user=user) if user is not None
-                 else ask_legacy(index, question))
-            r["pipeline"] = "legacy"
-            r["degraded"] = True
-            r["degrade_stage"] = "v2"
-            r["degrade_reason"] = reason
-            r["degrade_kind"] = "recoverable" if recoverable else "forced"
-            return r
-        # fail-closed：不执行未经校验流程的结果，把异常如实暴露出来
-        print(f"⛔ V2 异常且不允许回退（fail-closed, mode={mode}）：{reason}")
+        print(f"⛔ 统一主流程异常（fail-closed，不降级）：{reason}")
+        # ★ 错误分类：LLM 4xx（402 余额/401 密钥/403 拒绝）给友好文案 + 结构化错误码，
+        #   不再把技术堆栈甩给用户；其余异常维持原技术信息（便于排障）。
+        le = exceptions.classify_llm_error(e)
+        friendly = le.friendly() if le is not None else None
         r = _result(question, sql="", ok=False,
-                    error=f"企业级流水线异常，已中止（fail-closed）：{reason}",
+                    error=(friendly or f"企业级流水线异常，已中止（fail-closed）：{reason}"),
                     pipeline="v2")
+        # ★ 保留 degrade_* 字段（前端/审计已在读）：degraded 恒为 False，
+        #   只记录异常原因与阶段，供排障与告警使用，不再有"降级到第二套流水线"的语义。
         r["degraded"] = False
         r["degrade_stage"] = "v2"
         r["degrade_reason"] = reason
+        if le is not None:
+            r["error_code"] = le.status_code or le.kind   # ★ 结构化错误码（供统计/告警）
+            if le.kind == "fatal":
+                r["error_type"] = "llm_fatal"             # ★ 明确"不可重试"类别
         return r

@@ -10,20 +10,51 @@ db_clickhouse.py —— ClickHouse 数据源实现（生产用）
    ③ 应用层强制加 LIMIT，防止 SELECT * 拉全表
 """
 import re                        # 正则（判断 SQL 里是否已有 LIMIT）
+import threading                 # ★ 线程本地连接（每线程一条长连接，互不共享）
+import time                      # ★ 连接空闲计时
 
 import clickhouse_connect     # ClickHouse 官方 Python 客户端
 import config                 # 配置模块
 
 
 # ═══════════════════════════════════════════════════════════
-# 内部工具：建立连接
+# 内部工具：连接管理
 # ═══════════════════════════════════════════════════════════
-def _client():
-    """
-    建立一个 ClickHouse 连接
-    ★ 每次都新建连接：简单、无状态，适合低频的取数场景
-      （高频场景应该用连接池，那是另一个话题）
-    """
+#
+# ★★ 为什么不再"每次新建连接"？（实测数据，2026-10-30）
+#
+#   原来的实现：每个函数 `client = _client()` 用完 `client.close()`。
+#   注释当时写的是"适合低频取数场景"，但实测把这个假设推翻了：
+#
+#       新建连接      8.3 秒   （127.0.0.1:8123，经 SSH 隧道）
+#       复用连接查询  0.05 秒  （同一条 SQL：0.08 秒）
+#       ↓
+#       一次取数的 execute 阶段实测 5.8 秒，其中 SQL 只占 0.08 秒 ——
+#       **连接开销是查询本身的 70 倍**。
+#
+#   根因不是 ClickHouse 慢，而是建连接要走隧道握手 + 拉服务端设置，
+#   在隧道场景下固定要几秒。取数本身几十毫秒，被连接开销完全淹没。
+#
+# ★ 为什么用【线程本地】而不是全局共享一条？
+#   服务端是 FastAPI + asyncio.to_thread，一个请求跑在一个线程里；
+#   多个取数请求会并发。clickhouse_connect 的客户端虽然多数操作线程安全，
+#   但"共享一条连接 + 一个线程在 close"这种组合仍然容易踩坑。
+#   每线程一条，既拿到复用收益，又不需要考虑跨线程同步。
+#
+# ★ 为什么必须"出错自动重连"？
+#   连的是本地 SSH 隧道（ssh_tunnel.ensure_tunnel 会在端口不通时重建）。
+#   隧道一重建，长连接就废了 —— 若没有重连，第一句话就 500。
+#   所以：连接类错误 → 丢弃旧连接 → 重连 → 重试一次（只一次，避免雪崩）。
+#
+# ★ 为什么不用 ping 探活？
+#   每次查询前 ping 一下省不了时间（多一次往返 ~50ms），
+#   而"出错再重连"的代价只有失败那一次。少一次往返更划算。
+_LOCAL = threading.local()
+_STAT = {"created": 0, "reused": 0, "reconnect": 0}      # 可观测：连接生命周期
+
+
+def _new_client():
+    """真正建立一条新连接（唯一创建点）"""
     return clickhouse_connect.get_client(
         host=config.CK_HOST,             # 主机
         port=config.CK_PORT,             # 端口（8123 = HTTP 接口）
@@ -40,6 +71,94 @@ def _client():
     )
 
 
+def _drop_local():
+    """丢弃当前线程的连接（不抛异常：清理失败不该影响主流程）"""
+    c = getattr(_LOCAL, "client", None)
+    _LOCAL.client = None
+    _LOCAL.at = 0.0
+    if c is not None:
+        try:
+            c.close()
+        except Exception:
+            pass
+
+
+def _shared_client():
+    """取当前线程的连接；没有/过旧/开关关闭 → 新建。
+
+    过旧 = 空闲超过 CK_CONN_MAX_AGE 秒。为什么要上限？
+      隧道可能被中间设备掐掉空闲连接，TCP 层已经死了但对象还活着。
+      有上限可以让"长时间不用后的第一条查询"走新连接，少一次失败。
+    """
+    if not getattr(config, "CK_CONN_REUSE", True):
+        _STAT["created"] += 1
+        return _new_client()
+
+    c = getattr(_LOCAL, "client", None)
+    at = getattr(_LOCAL, "at", 0.0)
+    max_age = getattr(config, "CK_CONN_MAX_AGE", 600)
+    if c is not None and (time.time() - at) < max_age:
+        _STAT["reused"] += 1
+        return c
+    if c is not None:
+        _drop_local()
+    _LOCAL.client = _new_client()
+    _LOCAL.at = time.time()
+    _STAT["created"] += 1
+    return _LOCAL.client
+
+
+def _client():
+    """兼容旧调用名（等价于 _shared_client）。新代码请直接用 _shared_client。"""
+    return _shared_client()
+
+
+# 连接类错误的关键词：只对这些错误重连重试。
+#   ★ 绝不把"服务端报错"（语法错/权限不足/超时被 kill）也算进来 ——
+#     那些重试没有意义，只会把一次失败变成两次等待。
+_CONN_ERROR_HINTS = ("connection", "connect", "reset", "refused", "broken pipe",
+                     "remote end closed", "network", "unreachable", "getaddrinfo",
+                     "timed out", "timeout")
+
+
+def _is_conn_error(e):
+    """是否属于"连接断了"这类可重连的错误"""
+    if isinstance(e, (ConnectionError, TimeoutError)):
+        return True
+    name = type(e).__name__.lower()
+    msg = str(e).lower()
+    if "timeoutexceeded" in name or "timeout exceeded" in msg:
+        return False          # 服务端执行超时：重试只会再等一遍
+    return any(k in name or k in msg for k in _CONN_ERROR_HINTS)
+
+
+def _run(sql, parameters=None):
+    """★ 所有 ClickHouse 查询的统一入口：复用连接 + 断线重连（一次）。
+
+    返回 clickhouse_connect 的 QueryResult（调用方自己取 .result_rows / .column_names）。
+    """
+    client = _shared_client()
+    try:
+        return client.query(sql, parameters=parameters)
+    except Exception as e:
+        if not _is_conn_error(e):
+            raise
+        # 连接已废（典型场景：SSH 隧道重建）→ 丢掉重连，再试一次
+        _STAT["reconnect"] += 1
+        _drop_local()
+        return _shared_client().query(sql, parameters=parameters)
+
+
+def close_all():
+    """关闭当前线程的连接（测试/重启/切换数据源时用）"""
+    _drop_local()
+
+
+def conn_stats():
+    """连接统计（排障用：能看出复用是否生效）"""
+    return dict(_STAT)
+
+
 # ═══════════════════════════════════════════════════════════
 # ① 建演示库 —— 对 ClickHouse 无意义（真实库早就在了）
 # ═══════════════════════════════════════════════════════════
@@ -54,13 +173,13 @@ def create_demo_db():
 # ═══════════════════════════════════════════════════════════
 # ② ★ 抓表结构 —— 唯一需要按数据库定制的地方
 # ═══════════════════════════════════════════════════════════
-def _query_columns(client, db, batch):
+def _query_columns(db, batch):
     """查一批表的字段，返回 [(表名, 字段名, 类型), ...]"""
     quoted = ",".join(f"'{t}'" for t in batch)  # 表名来自 system.tables，不是用户输入
     sql = ("SELECT table, name, type FROM system.columns "
            f"WHERE database = '{db}' AND table IN ({quoted}) "
            "ORDER BY table, position")
-    return client.query(sql).result_rows
+    return _run(sql).result_rows
 
 
 def fetch_schema():
@@ -78,20 +197,19 @@ def fetch_schema():
       按【行预算】分批：攒够 8000 行就发一批（留 2000 余量），
       741 张表大约分成 40 批 → 往返次数降到 1/20，又快又不超限。
     """
-    client = _client()                          # 建连接
     db = config.CK_DATABASE                     # 库名（来自配置，是我们自己填的，可信）
 
     # ── 第一步：列出这个库里的所有表 ──
     #   system.tables 是 ClickHouse 的系统表，相当于 SQLite 的 sqlite_master
     #   ★ 这里直接拼字符串而不是用参数绑定，因为 db 来自我们自己的配置（不是用户输入），
     #     不存在注入风险。（用户输入绝不允许这样拼！）
-    tables = [r[0] for r in client.query(
+    tables = [r[0] for r in _run(
         f"SELECT name FROM system.tables WHERE database = '{db}'"
     ).result_rows]
 
     # ── 第二步：拿到每张表的字段数，用来算分批预算 ──
     #   （只返回"每表一行"的聚合结果，几百行，很轻）
-    counts = {r[0]: r[1] for r in client.query(
+    counts = {r[0]: r[1] for r in _run(
         "SELECT table, count() FROM system.columns "
         f"WHERE database = '{db}' GROUP BY table"
     ).result_rows}
@@ -102,14 +220,13 @@ def fetch_schema():
     for t in tables:
         n = counts.get(t, 0)
         if batch and used + n > ROW_BUDGET:     # 这批塞不下了 → 先发一批
-            rows.extend(_query_columns(client, db, batch))
+            rows.extend(_query_columns(db, batch))
             batch, used = [], 0
         batch.append(t)
         used += n
     if batch:                                   # 最后一批
-        rows.extend(_query_columns(client, db, batch))
+        rows.extend(_query_columns(db, batch))
 
-    client.close()                              # 关连接
     print(f"[ClickHouse] 从 {db} 抓取到 {len(tables)} 张表、{len(rows)} 个字段")
     return rows
 
@@ -120,12 +237,10 @@ def list_tables():
 
     返回：[表名, ...]
     """
-    client = _client()
     db = config.CK_DATABASE
-    rows = client.query(
+    rows = _run(
         f"SELECT name FROM system.tables WHERE database = '{db}'"
     ).result_rows
-    client.close()
     return [r[0] for r in rows]
 
 
@@ -139,14 +254,12 @@ def list_columns(table_name):
       system.columns 带 position 列，能保证顺序和建表时一致；
       而且只捞一张表（几十行），比拉全库 18025 行快得多。
     """
-    client = _client()
     db = config.CK_DATABASE
-    rows = client.query(
+    rows = _run(
         "SELECT name, type FROM system.columns "
         f"WHERE database = '{db}' AND table = '{table_name}' "
         "ORDER BY position"
     ).result_rows
-    client.close()
     return [(r[0], r[1]) for r in rows]
 
 
@@ -163,13 +276,11 @@ def list_column_stats():
       而这条 GROUP BY 聚合查询只返回几百行（每表一行），快到可以忽略。
       —— 能算的要让数据库算，别把明细捞到 Python 里再统计。
     """
-    client = _client()
     db = config.CK_DATABASE
-    rows = client.query(
+    rows = _run(
         "SELECT table, count() AS total, countIf(comment != '') AS commented "
         f"FROM system.columns WHERE database = '{db}' GROUP BY table"
     ).result_rows
-    client.close()
     return {r[0]: {"total": r[1], "db_commented": r[2]} for r in rows}
 
 
@@ -214,7 +325,6 @@ def fetch_comments(table_names=None):
       收窄范围后只有几百行，既不超限，又快得多。
       —— 教训：别为了"一次查完"去拉远超需要的行数。
     """
-    client = _client()                          # 建连接
     db = config.CK_DATABASE                     # 库名（来自我们自己的配置，可信）
 
     tables, columns = {}, {}                    # 两个空字典收集结果
@@ -234,7 +344,7 @@ def fetch_comments(table_names=None):
         #     不过滤的话白捞几百行空字符串回来，还得在 Python 里再筛一遍。
         t_sql = (f"SELECT name, comment FROM system.tables "
                  f"WHERE database = '{db}' AND comment != ''{tbl_filter}")
-        for name, comment in client.query(t_sql).result_rows:
+        for name, comment in _run(t_sql).result_rows:
             tables[name] = comment.strip()
 
         # ── 字段注释 ──
@@ -244,7 +354,7 @@ def fetch_comments(table_names=None):
             "SELECT table, name, comment FROM system.columns "
             f"WHERE database = '{db}' AND comment != ''{col_filter}"
         )
-        for tbl, col, comment in client.query(c_sql).result_rows:
+        for tbl, col, comment in _run(c_sql).result_rows:
             columns[f"{tbl}.{col}"] = comment.strip()
             #   ★ 用 "表名.字段名" 做键，避免不同表里同名字段互相覆盖
             #     （比如 dwd_order_all.city 和 dim_driver.city 是两个不同的注释）
@@ -260,8 +370,6 @@ def fetch_comments(table_names=None):
         print(f"⚠️ [ClickHouse] 抓取注释失败（{type(e).__name__}）：{e}")
         print("   → 不影响运行，但知识库质量会下降，请排查上面这条错误")
 
-    client.close()                              # 关连接
-
     print(f"[ClickHouse] 自动发现注释：{len(tables)} 条表注释、{len(columns)} 条字段注释")
     return {"tables": tables, "columns": columns}
 
@@ -276,14 +384,12 @@ def list_dict_types():
       99 个字典类型的全部取值加起来有近千条，一次全拉回来没必要。
       先列类型（每类一行，很少），用户选中哪一个再去取它的取值 —— 按需加载。
     """
-    client = _client()
-    rows = client.query(
+    rows = _run(
         "SELECT dict_type, count() AS n, "
         "arrayStringConcat(arraySlice(groupArray(dict_label), 1, 4), ' / ') AS sample "
         f"FROM {config.DICT_TABLE} "
         "WHERE dict_type != '' GROUP BY dict_type ORDER BY n DESC"
     ).result_rows
-    client.close()
     return [{"dict_type": r[0], "count": r[1], "sample": r[2]} for r in rows]
 
 
@@ -296,14 +402,12 @@ def fetch_dict_items(dict_type):
     ★ 用参数绑定而不是拼字符串：dict_type 来自页面输入，虽然是从列表里选的，
       但接口层面不能假设调用方一定守规矩 —— 用户输入永远按不可信处理。
     """
-    client = _client()
     # 表名来自 config（可信），dict_type 来自页面（不可信）→ 用参数绑定
-    rows = client.query(
+    rows = _run(
         f"SELECT dict_value, dict_label FROM {config.DICT_TABLE} "
         "WHERE dict_type = %(dt)s ORDER BY dict_sort, dict_value",
         parameters={"dt": dict_type},
     ).result_rows
-    client.close()
     return [{"value": str(r[0]), "label": str(r[1])} for r in rows]
 
 
@@ -345,9 +449,7 @@ def import_table_as_dict(table_name, value_col, label_col=None, limit=1000):
 
     sql = (f"SELECT DISTINCT {sel} FROM `{table_name}` {where} "
            f"ORDER BY `{value_col}` LIMIT {limit}")
-    client = _client()
-    rows = client.query(sql).result_rows
-    client.close()
+    rows = _run(sql).result_rows
 
     items = []
     seen = set()
@@ -416,10 +518,8 @@ def execute_sql(sql):
        ① sql_guard    —— 只读校验（不许 DELETE/DROP）
        ② check_tables —— 表级权限校验（只许查白名单表）
     """
-    client = _client()                          # 建连接
     final_sql = _ensure_limit(sql)              # ★ 强制加行数上限
-    result = client.query(final_sql)            # 执行
+    result = _run(final_sql)                    # 执行（复用长连接，断线自动重连一次）
     columns = result.column_names               # 列名（CK 的字段名）
     rows = result.result_rows                   # 结果行
-    client.close()                              # 关连接
     return columns, rows

@@ -22,6 +22,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from evaluation.evaluators import checks  # noqa: E402
+from evaluation import result_compare  # noqa: E402
 
 
 # ═══════════════════════════════════════════════════════════
@@ -71,6 +72,18 @@ def run_one(case, index, allowed_tables):
     h, hd = checks.check_hallucination(r, case, allowed_tables)
     scores["hallucination"] = {"status": h, "detail": hd}
 
+    # ★ 六类对拍判定（result_compare）：比 check_result 的 pass/fail 更细，
+    #   区分 exact / within_tolerance / structure_only / column_mismatch /
+    #   row_count_mismatch / incomparable，用于定位「到底差在哪」。
+    #   只在用例提供 expected_result 且执行拿到结果时才计算（否则为 None）。
+    result_verdict = None
+    if case.get("expected_result") is not None and r.get("rows") is not None:
+        try:
+            cmp = result_compare.compare(r.get("rows"), case.get("expected_result"))
+            result_verdict = cmp.get("verdict")
+        except Exception as e:
+            result_verdict = f"compare_error:{e}"
+
     # 业务语义：意图一致性（用例提供 intent 时）
     #   ★ 拒答类用例不判 intent：系统拒答走兜底逻辑，intent 值无判别意义
     und = r.get("understanding") or {}
@@ -95,10 +108,15 @@ def run_one(case, index, allowed_tables):
         "understanding": und,
         "answer": r.get("answer"),
         "validation": r.get("validation"),
+        # ★ SQL 经验中心：本次参考了哪些历史经验 / 命中哪些已知错误模式
+        #   （空 = 没召回；有值 = 可用于统计「黄金 SQL 命中率」「经验告警数」）
+        "experience": r.get("experience"),
+        "experience_warnings": r.get("experience_warnings") or [],
         "rows_preview": (r.get("rows") or [])[:3],
         "latency": round(latency, 2),
         "trace": r.get("trace"),
         "scores": scores,
+        "result_verdict": result_verdict,
     }
 
 
@@ -169,6 +187,33 @@ def aggregate(results):
     n_exec = sum(1 for x in results if x["ok"])
     metrics["sample_count"] = n_total
     metrics["executed_count"] = n_exec
+
+    # ── ★ SQL 经验中心专项指标 ──
+    #   为什么单独算？「总体准确率」看不出经验机制到底有没有被用上。
+    #   exp_case_hit_rate   = 有多少题召回到了高可信成功案例（黄金 SQL 命中率）
+    #   exp_failure_hit_rate= 有多少题召回到了失败经验（错误预防的覆盖面）
+    #   exp_warning_total   = 生成后被失败经验判为「疑似重犯」的条数
+    _with_exp = [x for x in results if (x.get("experience") or {}).get("cases")]
+    _with_fail = [x for x in results if (x.get("experience") or {}).get("failures")]
+    _warn = sum(len(x.get("experience_warnings") or []) for x in results)
+    metrics["exp_case_hit_rate"] = (round(len(_with_exp) / n_total, 4) if n_total else None)
+    metrics["exp_failure_hit_rate"] = (round(len(_with_fail) / n_total, 4) if n_total else None)
+    metrics["exp_warning_total"] = _warn
+    metrics["exp_case_hits"] = len(_with_exp)
+    # ★ 六类对拍分布（result_compare 判定）：exact / within_tolerance /
+    #   structure_only / column_mismatch / row_count_mismatch / incomparable。
+    #   只有用例提供 expected_result 时才计入（result_verdict 为 None 的不算）。
+    _verdicts = [x.get("result_verdict") for x in results if x.get("result_verdict")]
+    _vdist = {}
+    for v in _verdicts:
+        _vdist[v] = _vdist.get(v, 0) + 1
+    metrics["result_verdict_distribution"] = _vdist
+    # 对拍精确命中率（exact + within_tolerance 视为「结果一致」）
+    _n_cmp = len(_verdicts)
+    metrics["result_exact_rate"] = (round(
+        sum(1 for v in _verdicts if v in ("exact", "within_tolerance")) / _n_cmp, 4)
+        if _n_cmp else None)
+    metrics["result_compared_count"] = _n_cmp
     # ★ API 健康检查：若大量用例因 API 报错（如 402 余额不足）失败，本次结果不可信，
     #   必须拒绝覆盖 baseline —— 否则会把"环境故障"误当成"系统能力"写进基线。
     api_err = sum(1 for x in results

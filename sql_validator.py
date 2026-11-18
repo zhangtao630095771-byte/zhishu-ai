@@ -15,6 +15,7 @@ sql_validator.py —— SQL 生成后、执行前的多维度校验（SQL Valida
 """
 import re
 import guard
+import config          # ★ 读 SQL 方言 / join_use_nulls 配置（join_nulls 检查用）
 
 
 # ── 工具 ──
@@ -72,6 +73,92 @@ def _strip_paren_funcs(sql, names):
             out.append(sql[i])
             i += 1
     return "".join(out)
+
+
+def _extract_outer_where(sql):
+    """提取【最外层】WHERE 子句（忽略子查询内的 WHERE）。
+
+    用括号深度扫描：只在深度 0 处识别 where，取它到下一个深度 0 的
+    group by / order by / having / limit / union 之间的文本。
+    返回小写 WHERE 文本，无则空串。
+    """
+    s = sql or ""
+    low = s.lower()
+    n = len(s)
+    depth = 0
+    i = 0
+
+    def _word_at(pos, word):
+        """判断 pos 处是否以 word 开头且前后是词边界（避免误命中 order_status 等）。"""
+        if not low.startswith(word, pos):
+            return False
+        before = low[pos - 1] if pos > 0 else " "
+        after = low[pos + len(word)] if pos + len(word) < n else " "
+        return not (before.isalnum() or before == "_") and not (after.isalnum() or after == "_")
+
+    while i < n:
+        ch = low[i]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        elif depth == 0 and _word_at(i, "where"):
+            start = i + len("where")
+            j = start
+            d2 = 0
+            while j < n:
+                c2 = low[j]
+                if c2 == "(":
+                    d2 += 1
+                elif c2 == ")":
+                    d2 -= 1
+                elif d2 == 0:
+                    for kw in ("group", "order", "having", "limit", "union"):
+                        if _word_at(j, kw):
+                            return s[start:j].strip()
+                j += 1
+            return s[start:].strip()
+        i += 1
+    return ""
+
+
+def _extract_ratio_numerators(definition):
+    """从比率指标 definition 提取「分子条件」（CASE WHEN <cond> THEN 里的 cond）。
+
+    归一化：去空白、小写。用于检测这些条件是否被错误地写进了全局 WHERE。
+    """
+    conds = []
+    for m in re.finditer(r"case\s+when\s+(.+?)\s+then", definition or "", re.I | re.S):
+        cond = re.sub(r"\s+", "", m.group(1)).lower()
+        if cond:
+            conds.append(cond)
+    return conds
+
+
+def _check_ratio_denominator(sql, ctx, issues):
+    """比率指标【分母保护】：分子条件不得成为全局 WHERE。
+
+    完单率 = SUM(CASE WHEN status=6 ...)/COUNT(*)、接单率 = SUM(CASE WHEN is_picked=1 ...)/COUNT(*)，
+    二者的分母都是【全部订单】。若把分子条件（status=6 / is_picked=1）写进全局 WHERE，
+    分母就只剩满足条件的订单，比率会失去原本含义（完单率恒为 1）。
+    本校验拦截这种「分子条件污染全局过滤」的口径错误。
+    """
+    ratio_metrics = [m for m in (ctx.p1_metrics or [])
+                     if m.get("metric_type") == "ratio" or "率" in (m.get("name") or "")]
+    if not ratio_metrics:
+        return
+    where = re.sub(r"\s+", "", (_extract_outer_where(sql) or "")).lower()
+    if not where:
+        return
+    for m in ratio_metrics:
+        for cond in _extract_ratio_numerators(m.get("definition") or ""):
+            if cond and cond in where:
+                issues.append({
+                    "severity": "error", "tier": "P1", "rule": "ratio_denominator",
+                    "message": (f"指标「{m.get('name')}」的分子条件 `{cond}` 出现在了全局 WHERE，"
+                                f"会污染分母（比率分母应为全部订单）"),
+                    "suggestion": f"把 `{cond}` 移到 CASE WHEN 分子内，分母保持 COUNT(*)（全部订单）",
+                })
 
 
 # ═══════════════════════════════════════════════════════════
@@ -334,6 +421,214 @@ def _check_p2(sql, ctx, issues):
 
 
 # ═══════════════════════════════════════════════════════════
+# P2-b · ClickHouse LEFT/RIGHT JOIN 未匹配记录判断（join_use_nulls）
+# ═══════════════════════════════════════════════════════════
+# ★ 问题：ClickHouse join_use_nulls=0 时，LEFT/RIGHT JOIN 未匹配的右表字段
+#   补【类型默认值】（数值→0、String→''、Date→默认日期）而非 NULL，
+#   于是 `s.customer IS NULL / IS NOT NULL` 判断"是否关联成功"会静默算错。
+#
+# ★ 为什么【不能】只凭出现 IS NULL 就报错（任务硬约束）：
+#   必须同时结合 ①SQL 方言 ②join_use_nulls 配置 ③字段类型 ④字段是否 Nullable
+#   ⑤是否 JOIN 关联键。只有「ClickHouse + join_use_nulls=0 + 右表非 Nullable 字段
+#   + 关联键」才是高置信错误（error）；其余降级 warning 或直接跳过。
+
+# 字段类型解析：columns 字符串格式 `  - 字段名 (类型)  注释`，类型可能嵌套（Nullable(String)）
+_COL_TYPE_RE = re.compile(
+    r"^([A-Za-z_][A-Za-z0-9_]*)\s*\(([^()]*(?:\([^()]*\))?[^()]*)\)")
+
+
+def _table_column_types(ctx):
+    """从 ctx.p3_table_objs 提取 {表名(小写): {字段名(小写): 类型}}。"""
+    out = {}
+    for t in (getattr(ctx, "p3_table_objs", None) or []):
+        name = (t.get("name") or "").lower()
+        if not name:
+            continue
+        cols = {}
+        for line in (t.get("columns") or "").splitlines():
+            s = line.strip()
+            if not s.startswith("-"):
+                continue
+            m = _COL_TYPE_RE.match(s[1:].strip())
+            if m:
+                cols[m.group(1).lower()] = m.group(2)
+        out[name] = cols
+    return out
+
+
+def _default_fill_kind(dtype):
+    """返回 join_use_nulls=0 时该类型的默认补值类别。
+
+    "nullable" Nullable 类型（未匹配补 NULL，IS NULL 判断仍有效）
+    "numeric"  数值类型（补 0）
+    "string"   字符串类型（补 ''）
+    "date"     日期类型（补默认日期）
+    "unknown"  无法判定（保守处理）
+    """
+    d = (dtype or "").strip().lower()
+    if not d:
+        return "unknown"
+    if d.startswith("nullable"):
+        return "nullable"
+    if d.startswith(("uint", "int", "float", "double", "decimal")):
+        return "numeric"
+    if d.startswith(("string", "fixedstring")):
+        return "string"
+    if d.startswith(("date", "datetime")):
+        return "date"
+    return "unknown"
+
+
+def _join_null_targets(sql):
+    """用 sqlglot 提取 join_use_nulls=0 下「未匹配会补默认值」的表。
+
+    ClickHouse 补值规则（join_use_nulls=0）：
+      LEFT JOIN  → 右表（被 JOIN 进来的表）未匹配补默认值
+      RIGHT JOIN → 左表（FROM 主表）未匹配补默认值
+
+    返回 [{"table": 表名(小写，子查询为 None),
+           "alias": 别名(小写，无别名用表名),
+           "on_fields": ON 条件里该表侧字段名集合(小写)}]
+
+    解析失败返回 []（保守降级：不告警、不阻断，表级校验仍由 P3 兜底）。
+    """
+    out = []
+    try:
+        import sqlglot
+        from sqlglot import exp
+        tree = sqlglot.parse_one(sql, read="clickhouse")
+    except Exception:
+        return out
+    if tree is None:
+        return out
+
+    # FROM 主表（RIGHT JOIN 的补值对象是左表）
+    #   ★ sqlglot 里 Select 的 FROM 存于 args["from_"]（from 是 Python 关键字，带下划线）
+    from_table, from_alias = None, None
+    frm = tree.args.get("from_")
+    if frm is not None:
+        ft = frm.this
+        if isinstance(ft, exp.Table):
+            from_table = (ft.name or "").lower()
+            from_alias = (ft.alias or "").lower() or from_table
+
+    def _on_fields(on, alias):
+        if on is None:
+            return set()
+        return {(c.name or "").lower() for c in on.find_all(exp.Column)
+                if (c.table or "").lower() == alias}
+
+    for j in tree.find_all(exp.Join):
+        side = (j.side or "").upper()
+        on = j.args.get("on")
+        if side == "LEFT":
+            t = j.this
+            table, alias = None, None
+            if isinstance(t, exp.Table):
+                table = (t.name or "").lower()
+                alias = (t.alias or "").lower() or table
+            elif isinstance(t, exp.Subquery):
+                alias = (t.alias or "").lower()
+            if alias:
+                out.append({"table": table, "alias": alias,
+                            "on_fields": _on_fields(on, alias)})
+        elif side == "RIGHT":
+            # RIGHT JOIN 补值的是左表（FROM 主表）
+            if from_alias:
+                out.append({"table": from_table, "alias": from_alias,
+                            "on_fields": _on_fields(on, from_alias)})
+    return out
+
+
+def _check_join_nulls(sql, ctx, issues, dialect=None, join_use_nulls=None):
+    """ClickHouse LEFT/RIGHT JOIN 后，用「未匹配侧字段」IS NULL/IS NOT NULL 判断关联的问题。
+
+    ★ 未匹配侧：LEFT JOIN 是右表、RIGHT JOIN 是左表（见 _join_null_targets）。
+    """
+    # ① 方言：只有 ClickHouse 才有默认补值机制（其它方言 NULL 判断正常）
+    d = (dialect if dialect is not None else getattr(config, "SQL_DIALECT", "") or "")
+    if str(d).lower() != "clickhouse":
+        return
+
+    # ② join_use_nulls：=1 时 NULL 判断有效，直接放行
+    jn = join_use_nulls if join_use_nulls is not None \
+        else getattr(config, "CK_JOIN_USE_NULLS", -1)
+    try:
+        jn = int(jn)
+    except (TypeError, ValueError):
+        jn = -1
+    if jn == 1:
+        return
+
+    col_types = _table_column_types(ctx)
+    joins = _join_null_targets(sql)
+    if not joins:
+        return
+
+    for rt in joins:
+        alias = rt["alias"]
+        types = col_types.get(rt.get("table") or "", {})
+        on_fields = rt.get("on_fields") or set()
+        pat = re.compile(
+            r"\b" + re.escape(alias) + r"\.([A-Za-z_][A-Za-z0-9_]*)\s+is\s+(not\s+)?null\b",
+            re.I)
+        for m in pat.finditer(sql):
+            col = m.group(1).lower()
+            neg = bool(m.group(2))                    # True = IS NOT NULL
+            verb = "IS NOT NULL" if neg else "IS NULL"
+            dtype = types.get(col)
+            kind = _default_fill_kind(dtype) if dtype else "unknown"
+            if kind == "nullable":
+                continue                              # Nullable 字段 IS NULL 判断仍有效
+            is_key = col in on_fields
+
+            if kind == "unknown":
+                # 类型未知（子查询右表 / 表不在召回范围）→ 只对关联键给 warning
+                if not is_key:
+                    continue
+                issues.append({
+                    "severity": "warning", "tier": "P2", "rule": "join_nulls_unknown",
+                    "message": (f"检测到用 JOIN 关联字段 `{alias}.{col} {verb}` 判断关联是否成功，"
+                                f"但无法确认该字段类型；若 ClickHouse join_use_nulls=0，"
+                                f"未匹配字段补默认值而非 NULL，此判断会失效"),
+                    "suggestion": (f"改用显式关联标记字段（子查询输出 `1 AS matched`，"
+                                   f"再 `countIf({alias}.matched = 1)`），"
+                                   f"并在 .env 显式配置 CK_JOIN_USE_NULLS 与真实库对齐"),
+                })
+                continue
+
+            # numeric / string / date：默认补非 NULL 值，IS NULL 判断失效
+            #   ★ 只有「join_use_nulls=0 明确 + 关联键」才是高置信错误（error），
+            #     否则降级 warning（避免"仅凭 IS NULL"误伤）。
+            if jn == 0 and is_key:
+                sev = "error"
+            else:
+                sev = "warning"
+            fill_desc = {"numeric": "0", "string": "空字符串 ''",
+                         "date": "对应类型的默认日期"}.get(kind, "默认值")
+            if sev == "error":
+                message = (f"ClickHouse join_use_nulls=0 时，LEFT/RIGHT JOIN 未匹配的一侧字段"
+                           f"补【类型默认值】（本字段补 {fill_desc}）而非 NULL，"
+                           f"`{alias}.{col} {verb}` 判断关联已失效"
+                           f"（{verb} 恒为{'真' if neg else '假'}），统计结果会静默算错")
+            else:
+                message = (f"用 JOIN 关联字段 `{alias}.{col} {verb}` 判断关联是否成功；"
+                           f"若 ClickHouse join_use_nulls=0，该字段（{dtype or '未知类型'}）"
+                           f"未匹配补 {fill_desc} 而非 NULL，此判断会失效，"
+                           f"请确认 CK_JOIN_USE_NULLS 配置")
+            sug = (f"改用显式关联标记字段：子查询输出 `1 AS matched`，关联后用 "
+                   f"`countIf({alias}.matched = 1)` 判断（未匹配 matched 默认补 0，可靠且"
+                   f"不依赖业务字段取值）")
+            if kind == "numeric":
+                sug += (f"；或确认 `{alias}.{col}` 业务上不可能为 0 时改用 "
+                        f"`{alias}.{col} != 0`")
+            issues.append({
+                "severity": sev, "tier": "P2", "rule": "join_nulls",
+                "message": message, "suggestion": sug,
+            })
+
+
+# ═══════════════════════════════════════════════════════════
 # P3 · Schema（表/字段存在性）
 # ═══════════════════════════════════════════════════════════
 def _extract_table_columns(sql):
@@ -478,6 +773,8 @@ def _check_metric(sql, ctx, resolved, issues):
             ratio_names.append(m["name"])
     if not ratio_names:
         return
+    # ★ 分母保护：比率指标的分子条件（status=6 / is_picked=1）不得写成全局 WHERE
+    _check_ratio_denominator(sql, ctx, issues)
     # 在 SELECT 列表里找除法表达式
     select_block = ""
     m = re.search(r"select\s+(.*?)\bfrom\b", s, re.I | re.S)
@@ -546,6 +843,7 @@ def validate_sql_ex(sql, ctx, resolved, allowed_tables):
         ("P0", lambda: _check_p0(sql, issues)),
         ("P1", lambda: _check_p1(sql, ctx, resolved, issues)),
         ("P2", lambda: _check_p2(sql, ctx, issues)),
+        ("P2", lambda: _check_join_nulls(sql, ctx, issues)),
         ("P3", lambda: _check_p3(sql, ctx, allowed_tables, issues)),
         ("Metric", lambda: _check_metric(sql, ctx, resolved, issues)),
     ]

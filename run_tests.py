@@ -26,20 +26,41 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REGISTRY = [
     ("test_imports.py",          "unit"),
     ("test_pipeline.py",         "unit"),
+    ("test_prompt_constraints.py", "unit"),
     ("test_gate.py",             "unit"),
     ("test_join_suggest.py",     "unit"),
     ("test_guard.py",            "unit"),
     ("test_labels.py",           "unit"),
     ("test_retrieve.py",         "unit"),
     ("test_permission.py",       "unit"),
-    ("test_legacy_validation.py","unit"),
     ("test_join_cardinality.py", "unit"),
+    ("test_join_nulls.py",       "unit"),       # ClickHouse LEFT/RIGHT JOIN 未匹配补值检查（join_use_nulls）
     ("test_audit_safety.py",     "unit"),
     ("test_result_check.py",     "unit"),
+    ("test_result_cache.py",     "unit"),
+    ("test_prompt_assembly.py",  "unit"),
+    ("test_annotate_expected.py","unit"),
     ("test_golden_demo_dataset.py", "unit"),
+    ("test_result_compare.py",   "unit"),      # P0-1 结果对比引擎（六类判定 + 差异定位，纯逻辑）
+    ("test_pipeline_convergence.py", "unit"),  # 双流水线收敛：唯一主流程 + fail-closed + 退役不变量
+    ("test_llm_errors.py",       "unit"),      # LLM 错误分类层：4xx 快速失败 / 超时可重试 / 非 LLM 不归类
+    # ★ 增量修改 + 需求一致性审核（P0~P2 建的三个文件，之前漏登记 —— 等于 173 项断言
+    #   一直没被 runner 跑过。纯逻辑的两个放 unit，用到临时配置库的那个放 config。）
+    ("test_modify_query.py",     "unit"),
+    ("test_requirement_review.py", "unit"),
     ("evaluation/test_calendar.py", "unit"),
     ("test_acl.py",              "config"),
     ("test_knowledge_governance.py", "config"),
+    ("test_sql_experience.py",   "config"),   # 经验中心：纯逻辑 + 临时库状态机（不碰真实库）
+    ("test_gate_req.py",         "config"),   # 需求审核接进 ask_v2 闸门循环（临时库 + 模型替身）
+    ("test_status_chain.py",     "config"),   # 状态链四徽章：落库还原语义 + 前端接线
+    ("test_frontend_structure.py", "config"),  # 前端结构：文件引用/语法（纯）+ 静态托管（需 app）
+    ("test_clarification.py",    "config"),   # 多轮澄清：纯逻辑 + 临时库 + 端点（打桩不连 LLM/库）
+    ("test_clarification_multimetric.py", "config"),  # 多轮澄清「多指标共存」+ 指标公式过滤作用域专项
+    ("test_ambiguity.py",        "unit"),     # 智能澄清引擎（第二阶段：时间+实体歧义检测，纯逻辑）
+    ("test_ossie_adapter.py",    "unit"),     # Apache Ossie 适配层：Schema 校验 / 双向转换 / 往返一致性（纯逻辑）
+    ("test_golden_cases.py",     "config"),   # P0-1 标准问题集管理（临时库 + 现有闸门验证）
+    ("test_semantic_center.py",  "config"),   # 语义中心（阶段五~七）：AI 建模 candidate / 不覆盖人工 / 治理准入
     ("test_gaps.py",             "integration"),
 ]
 LEVEL_ZH = {"unit": "纯逻辑单测", "config": "需本地配置库", "integration": "需真实 ClickHouse"}

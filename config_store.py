@@ -45,6 +45,9 @@ DEFAULT_PROMPTS = {
 3. 时间范围一律用左闭右开：create_time >= '起始' AND create_time < '结束'
 4. 统计数量用 COUNT(*)
 5. 只输出 SQL，不要任何解释，不要用 ``` 包裹
+   ★ 第一行必须是 SQL 本身（SELECT 或 WITH），前面绝对不要写任何思路/说明/结论等开场白
+   （例如「不用 WITH 了，直接 CROSS JOIN 输出一行」这类思考过程一律禁止——
+     那是解释，不是 SQL，会直接导致解析失败、查询被拒）
 6. 计算比率时，用 CASE WHEN 分别统计分子分母，禁止把分子条件写进 WHERE
    错误写法：WHERE status = 7 AND 时间   → 分母被提前过滤，结果恒等于 100%
    正确写法：SUM(CASE WHEN status = 7 THEN 1 ELSE 0 END) / COUNT(*)
@@ -140,7 +143,26 @@ DEFAULT_PROMPTS = {
       SQLite 写法：strftime('%Y-%m', 时间字段) AS `月份`
     - 按「年」聚合：输出 `YYYY`，如 formatDateTime(toStartOfYear(时间字段), '%Y') AS `年份`
     - 按「日」聚合：输出 `YYYY-MM-DD`（toDate 即可）
-    ★ 时间过滤条件仍按规则 3 保持左闭右开；本条只影响 SELECT 输出列的表达方式。""",
+    ★ 时间过滤条件仍按规则 3 保持左闭右开；本条只影响 SELECT 输出列的表达方式。
+21. ★ ClickHouse LEFT JOIN 未匹配记录的判断（join_use_nulls=0 的默认补值机制，违反会【静默算错】）：
+    ClickHouse 在 join_use_nulls=0 时，LEFT JOIN / RIGHT JOIN 未匹配的右表字段
+    【补字段类型的默认值，而不是 NULL】：
+      · UInt/Int/Float/Decimal 等数值类型 → 补 0
+      · String / FixedString            → 补空字符串 ''
+      · Date / DateTime                 → 补对应类型的默认日期（如 1970-01-01）
+    ★ 因此【禁止】用右表字段 `IS NULL` / `IS NOT NULL` 判断"是否关联成功"：
+      数值字段未匹配补 0，`s.customer IS NULL` 永远为假、`s.customer IS NOT NULL`
+      永远为真 → 关联判断彻底失效，统计结果静默算错（尤其"有小板发单的客户占比"这类）。
+    ★ 正确写法（二选一，优先用 (a)）：
+      (a) 显式关联标记字段：右表子查询里输出 `1 AS matched`（如
+          `SELECT customer, 1 AS matched FROM 小板发单表 GROUP BY customer`），
+          关联后用 `countIf(s.matched = 1)` / `s.matched = 1` 判断；未匹配时
+          matched 默认补 0，判断可靠且不依赖业务字段取值。
+      (b) 若右表业务主键【确认不可能为 0】（如客户 id 从 1 起），可用
+          `s.customer != 0` 判断关联成功；若该字段业务上允许 0，则不可用此法。
+    ★ 例外：右表字段本身是 Nullable 类型时，未匹配补 NULL，`IS NULL` 判断仍然有效。
+    ★ 边界：本规则【只针对 ClickHouse】；SQLite / MySQL 等方言保持标准 NULL 判断，
+      不要改它们的 IS NULL / IS NOT NULL 逻辑。""",
 
     "role": "你是一名资深数据分析师，负责把用户的自然语言问题转换成 {dialect} SQL。",
 }
@@ -626,7 +648,11 @@ def init_store():
             cardinality    TEXT DEFAULT '1:1', -- 1:1 / 1:N（1:N → pre_agg_required=1）
             pre_agg_required INTEGER DEFAULT 0, -- 1 = 右表须先按关联键 GROUP BY 预聚合
             rule_note      TEXT,               -- 业务说明
-            enabled        INTEGER DEFAULT 1
+            enabled        INTEGER DEFAULT 1,
+            allow_auto_join INTEGER DEFAULT 0, -- 1 = 允许自动 Join（1:1）；1:N 须人工确认
+            agg_risk       TEXT DEFAULT 'low', -- low/medium/high（一对多 Join 聚合风险）
+            confidence     TEXT DEFAULT 'medium', -- low/medium/high 可信度
+            scenario       TEXT                -- 适用场景
         )
     """)
 
@@ -722,6 +748,8 @@ def init_store():
             attempts       INTEGER DEFAULT 0,     -- 尝试次数（>1 说明经过了自愈重试）
             pipeline       TEXT,                  -- v2 企业级 / legacy 旧兜底
             understanding  TEXT,                  -- JSON：查询理解（意图/指标/实体/维度/时间/歧义）
+            req_verdict    TEXT,                  -- ★ 需求一致性审核结论：pass/fail/unsure/skipped
+            req_findings   TEXT,                  -- ★ JSON：审核发现的问题（为什么判 fail）
             review_status  TEXT DEFAULT 'none',   -- none/pending/approved/rejected
             review_note    TEXT,                  -- 审核意见
             reviewer       TEXT,                  -- 审核人
@@ -742,9 +770,65 @@ def init_store():
         "attempts": "INTEGER DEFAULT 0",
         "pipeline": "TEXT",
         "understanding": "TEXT",        # 查询理解 JSON
+        # ★ 需求一致性审核结论。为什么要独立成列而不是塞进 info？
+        #   info 是自由文本（"向量召回｜字典…"），没法按结论聚合。
+        #   想做"通过率/误拦率"这类统计，就必须是可过滤的结构化字段。
+        "req_verdict": "TEXT",          # pass/fail/unsure/skipped
+        "req_findings": "TEXT",         # JSON：问题列表（判 fail 时的依据）
+        # ★ 双流水线收敛（P0）：统一主流程的可观测性列。
+        #   degraded=1 表示"本次走了 fail-closed（V2 异常且不降级）"，
+        #   degrade_reason 记录异常类型+信息，trace_json 落各阶段耗时。
+        #   灰度/验收据此识别"实际走的流程版本"与"统一主流程稳定性"。
+        "degraded": "INTEGER DEFAULT 0",
+        "degrade_reason": "TEXT",
+        "trace_json": "TEXT",
     }.items():
         if cname not in qr_cols:
             cur.execute(f"ALTER TABLE query_records ADD COLUMN {cname} {cdef}")
+
+    # ⑨.5 ★ 多轮澄清会话状态（Query Clarification）
+    #   【它解决什么问题？】
+    #     sessions 表只有 token→username，没有任何对话上下文。
+    #     多轮澄清需要"上一轮问的什么、用户确认了什么、还差什么"，必须在服务端持久化，
+    #     否则用户刷新页面/换设备后状态就丢了，回答还会被并到别的查询上。
+    #   【为什么用 query_id 做主键而不是复用 token？】
+    #     一个登录会话里可能同时开多个查询任务，token 区分不了"这是哪一次澄清"。
+    #     query_id 是一次澄清任务的身份，username 是归属（读写都要校验，防越权）。
+    #   【状态机】
+    #     pending → clarifying →（用户回答）→ ready →（交给 agent.ask）→ success/failed
+    #              ↘ cancelled / needs_knowledge（转知识治理，不再追问）
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS clarify_sessions (
+            id                 TEXT PRIMARY KEY,    -- query_id（一次澄清任务）
+            username           TEXT,                -- 归属账号（权限校验）
+            session_token      TEXT,                -- 关联 sessions.token（可选）
+            original_question  TEXT,
+            intent             TEXT,                -- JSON：结构化意图
+            confirmed_slots    TEXT,                -- JSON：已确认条件（指标/时间/过滤）
+            pending_clarifications TEXT,            -- JSON：待确认问题
+            candidate_evidence TEXT,                -- JSON：候选项及知识证据
+            clarification_round INTEGER DEFAULT 0,
+            status             TEXT,                -- pending/clarifying/needs_knowledge/ready/...
+            reason             TEXT,                -- 决策理由（可观测性）
+            final_sql          TEXT,                -- 最终 SQL 或关联记录
+            execution_result   TEXT,                -- JSON：执行状态与结果摘要
+            created_at         TEXT,
+            updated_at         TEXT
+        )
+    """)
+
+    # ⑨.5 ★ 查询上下文（增量修改锚点）：一次查询的完整上下文（问题/意图/SQL/状态），
+    #   供"当前窗口自然语言修改"携带 base_query_id 回读。
+    #   ★ 单独一条 execute —— sqlite 的 execute 不接受一条串里塞两条 CREATE，
+    #   否则会报 'near "CREATE": syntax error'（多语句必须拆开）。
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS query_context (
+            id                 TEXT PRIMARY KEY,    -- 一次查询上下文 id（增量修改锚点）
+            username           TEXT,                -- 归属账号（防越权）
+            payload            TEXT,                -- JSON：原问题/意图/SQL/状态等
+            created_at         TEXT
+        )
+    """)
 
     # ⑩ ★ 查询结果快照（导出用）
     #   为什么单独存一份，而不是导出时重新执行 SQL？
@@ -782,8 +866,81 @@ def init_store():
     # ⑬ ★ 知识治理升级（变更历史 + 知识元数据列 + 索引重建状态）—— 幂等，只增不删
     _migrate_knowledge_governance(cur)
 
+    # ⑬.5 ★ 语义模型容器 + OSSIE 导入导出日志（知识中心整合 + OSSIE 标准兼容）
+    #    ★ 与 SQL 经验/标准问题同样：领域 DDL 归本模块，这里只调用；失败不挡启动。
+    try:
+        _migrate_semantic_models(cur)
+    except Exception as e:
+        print(f"⚠️ 语义模型迁移失败（不影响取数）：{e}")
+
+    # ⑬.6 ★ OSSIE 融合式改造：业务主题 + 字段维度属性 + 指标标准表达式（幂等，只增不改）
+    try:
+        _migrate_fusion_schema(cur)
+    except Exception as e:
+        print(f"⚠️ 融合式改造迁移失败（不影响取数）：{e}")
+
+    # ⑭ ★ SQL 经验中心（案例 / 规则 / 使用日志 + query_records.error 列）
+    #    ★ DDL 放在 sql_experience 里（领域数据归领域模块），这里只负责在初始化时调用；
+    #      局部 import 避免模块级循环依赖（sql_experience 运行时需要 config_store 连库）。
+    #    ★ 迁移失败绝不能挡住整个服务启动 —— 经验是"加分项"，取数是主业务。
+    try:
+        import sql_experience as _exp
+        _exp.migrate_schema(cur)
+    except Exception as e:
+        print(f"⚠️ SQL 经验中心迁移失败（不影响取数，EXP_ENABLED=0 可彻底关闭）：{e}")
+
+    # ⑮ ★ 标准问题集（golden_cases / 版本 / 验证日志）—— P0-1 标准评测体系
+    #    ★ 与 SQL 经验中心同样：DDL 归领域模块，这里只调用；失败不挡启动。
+    try:
+        import golden_cases as _gc
+        _gc.migrate_schema(cur)
+    except Exception as e:
+        print(f"⚠️ 标准问题集迁移失败（不影响取数）：{e}")
+
+    # ⑯ ★ 本体建模（实体属性映射 / 业务规则登记 / 实体英文标识）—— 幂等，只增不改
+    try:
+        import ontology as _onto
+        _onto.migrate_schema(cur)
+    except Exception as e:
+        print(f"⚠️ 本体建模迁移失败（不影响取数）：{e}")
+
+    # ⑰ ★ 语义建模（关系模型表清单 / 表级 Join / 维度 / 指标分类）—— 幂等，只增不改
+    try:
+        import semantic_modeling as _sm
+        _sm.migrate_schema(cur)
+    except Exception as e:
+        print(f"⚠️ 语义建模迁移失败（不影响取数）：{e}")
+
     conn.commit()
     conn.close()
+
+
+# ═══════════════════════════════════════════════════════════
+# ★ 知识分层（P0~P4）→ 落库表 的【唯一事实源】
+#   ═══════════════════════════════════════════════════════════
+#   以前分层靠"不同表 + 注释"隐式表达，散落在 semantic_layer.py / server.py / kb.js
+#   三处硬编码，跨层一致性靠约定而非约束（审计 03 明确点出 "P0/P3 未显式建模"）。
+#   现在收敛到这里：给每张知识表加统一的 knowledge_level 字段，分层从"约定"变"字段"。
+#
+#   分层对照：
+#     P0 系统规则        → prompts（key-value 表，sql_rules 等，无 knowledge_level，单独表达）
+#     P1 指标定义        → metrics
+#     P2 实体/关系/Join  → entities、relationships
+#     P3 表字段 Schema   → table_comments、column_comments、dict_entries
+#     P4 业务文档        → kb_docs
+#
+#   ★ P3 的"Schema 本体"（表名/字段名/类型）是运行时从 ClickHouse fetch_schema() 抓的，
+#     不落库；落库的是 Schema 之上的"注释 / 字典"——两者合起来才是完整的 P3。
+# ═══════════════════════════════════════════════════════════
+KNOWLEDGE_LEVEL = {
+    "metrics": 1,           # P1 指标定义（权威口径）
+    "entities": 2,          # P2 业务实体
+    "relationships": 2,     # P2 关联 / Join 规则
+    "table_comments": 3,    # P3 Schema · 表注释
+    "column_comments": 3,   # P3 Schema · 字段注释
+    "dict_entries": 3,      # P3 Schema · 数据字典
+    "kb_docs": 4,           # P4 业务文档
+}
 
 
 # ═══════════════════════════════════════════════════════════
@@ -821,6 +978,19 @@ def _migrate_knowledge_governance(cur):
         "version": "INTEGER DEFAULT 1",
         "source_ref": "TEXT",
     }
+    # ②-a ★ 知识治理列（GOV-1）：状态机 + 来源 + 核准信息。
+    #   ★ 为什么放在 _ensure_ready 里，而不是只靠 _migrate_governance.py？
+    #     迁移脚本是一次性工具，新库 / 新表 / 别人 clone 下来跑，都可能没有这些列。
+    #     一旦缺列，写入会直接抛 "no such column: status" —— 比"缺数据"更难排查。
+    #     放在建表入口这里，等于"打开库就自愈"，迁移脚本只负责回填内容。
+    #   source 列：metrics / dict_entries / relationships 以前没有这个字段，
+    #     导致无法区分"人定的口径"和"AI 起草的口径"，AI 一覆盖就把人写的冲掉了。
+    _gov_cols = {
+        "status": "TEXT DEFAULT 'approved'",      # approved / candidate / rejected ...
+        "source": "TEXT DEFAULT 'manual'",        # manual（人）/ ai（机器起草）
+        "approved_at": "TEXT",                    # 核准时间（进审计链）
+        "approved_by": "TEXT",                    # 核准人
+    }
     for table in ("metrics", "entities", "relationships", "kb_docs",
                   "dict_entries", "table_comments", "column_comments"):
         try:
@@ -830,6 +1000,21 @@ def _migrate_knowledge_governance(cur):
         for cname, cdef in _meta_cols.items():
             if cname not in existing:
                 cur.execute(f"ALTER TABLE {table} ADD COLUMN {cname} {cdef}")
+        for cname, cdef in _gov_cols.items():
+            if cname not in existing:
+                cur.execute(f"ALTER TABLE {table} ADD COLUMN {cname} {cdef}")
+
+    # ②-c ★ 知识分层显式建模（审计 03："P0/P3 未显式建模"）：
+    #   给每张知识表加统一的 knowledge_level 字段，P0~P4 从"靠表名隐式"变成"字段显式"。
+    #   ★ DEFAULT 会回填老行：ALTER ADD COLUMN ... DEFAULT n 对已有数据也生效，
+    #     所以历史知识能自动对上正确层级，不用补数据迁移脚本。
+    for tbl, lvl in KNOWLEDGE_LEVEL.items():
+        try:
+            existing = [r[1] for r in cur.execute(f"PRAGMA table_info({tbl})").fetchall()]
+        except Exception:
+            continue                              # 表不存在 → 跳过，不挡启动
+        if "knowledge_level" not in existing:
+            cur.execute(f"ALTER TABLE {tbl} ADD COLUMN knowledge_level INTEGER DEFAULT {lvl}")
 
     # ②-b 反馈闭环（GAP-6）：feedbacks 增加「关联知识 / 回归样例 / 根因」三列，
     #   让用户反馈能显式关联到被修正的知识或生成的回归样例，形成治理闭环。
@@ -855,6 +1040,37 @@ def _migrate_knowledge_governance(cur):
             built_at    TEXT
         )
     """)
+
+
+def get_knowledge_level_counts():
+    """
+    按 knowledge_level 统计 P0~P4 各层知识条数，返回 {0:.., 1:.., 2:.., 3:.., 4:..}
+
+    ★ 这是「分层显式建模」的读出口：P0~P4 不再散在代码硬编码里，
+      而是落在每张知识表的 knowledge_level 字段上，这里按字段聚合。
+    ★ P0（系统规则）载体是 prompts（key-value 表，无 knowledge_level），单独计数；
+      P1~P4 直接按 KNOWLEDGE_LEVEL 映射到具体表、按字段过滤统计。
+    ★ 任何一张表/列缺失都按 0 计（诚实不编），不抛异常拖垮调用方。
+    """
+    _ensure_ready()
+    conn = _connect()
+    cur = conn.cursor()
+    counts = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0}
+    # P0：系统规则条数（prompts 表，key-value）
+    try:
+        cur.execute("SELECT COUNT(*) FROM prompts")
+        counts[0] = cur.fetchone()[0] or 0
+    except Exception:
+        pass
+    # P1~P4：每张知识表按其所属层级统计
+    for tbl, lvl in KNOWLEDGE_LEVEL.items():
+        try:
+            cur.execute(f"SELECT COUNT(*) FROM {tbl} WHERE knowledge_level = ?", (lvl,))
+            counts[lvl] += cur.fetchone()[0] or 0
+        except Exception:
+            continue
+    conn.close()
+    return counts
 
 
 # ═══════════════════════════════════════════════════════════
@@ -1101,7 +1317,7 @@ def get_metrics(enabled_only=True):
     cur = conn.cursor()
     sql = ("SELECT name, keywords, definition, doc, tables, enabled, "
            "metric_type, priority, sql_template, depends_metrics, conflict_key, "
-           "required_predicates, required_columns, forbidden_predicates "
+           "required_predicates, required_columns, forbidden_predicates, expression "
            "FROM metrics ")
     if enabled_only:
         sql += "WHERE enabled = 1 "                 # 只取开放的
@@ -1124,9 +1340,41 @@ def get_metrics(enabled_only=True):
             "required_predicates": _from_json(r[11]),   # ★ 硬约束：必须出现的过滤片段
             "required_columns": _from_json(r[12]),      # ★ 硬约束：必须出现的字段
             "forbidden_predicates": _from_json(r[13]),  # ★ 负向约束：禁止出现的字段/片段
+            "expression": r[14] or "",                   # ★ OSSIE 标准表达式（可空）
         }
         for r in rows
     ]
+
+
+def get_metrics_with_governance(enabled_only=True):
+    """取指标并附带治理字段（status / source），供【澄清模块】筛选可信候选。
+
+    ★ 为什么单开一个函数，而不是改 get_metrics？
+      get_metrics 是检索主链路的契约（rag.build_index 直接消费），
+      澄清要的是「带审核状态的完整指标」，两者用途不同，混在一处容易互相拖累。
+      候选只认 approved（governance.visible_status），见 clarification.approved_metrics。
+    """
+    _ensure_ready()
+    conn = _connect()
+    cur = conn.cursor()
+    sql = ("SELECT name, keywords, definition, doc, tables, enabled, "
+           "metric_type, priority, sql_template, depends_metrics, conflict_key, "
+           "required_predicates, required_columns, forbidden_predicates, status, source "
+           "FROM metrics ")
+    if enabled_only:
+        sql += "WHERE enabled = 1 "
+    sql += "ORDER BY name"
+    rows = cur.execute(sql).fetchall()
+    conn.close()
+    return [{
+        "name": r[0], "keywords": _from_json(r[1]), "definition": r[2], "doc": r[3],
+        "tables": _from_json(r[4]), "enabled": bool(r[5]), "metric_type": r[6] or None,
+        "priority": r[7] if r[7] is not None else 1, "sql_template": r[8] or "",
+        "depends_metrics": _from_json(r[9]), "conflict_key": r[10] or "",
+        "required_predicates": _from_json(r[11]), "required_columns": _from_json(r[12]),
+        "forbidden_predicates": _from_json(r[13]),
+        "status": r[14] or "", "source": r[15] or "manual",
+    } for r in rows]
 
 
 def get_disabled_metrics():
@@ -1205,23 +1453,35 @@ def get_disabled_dicts():
     return [d for d in get_dict_entries(enabled_only=False) if not d["enabled"]]
 
 
-def upsert_dict_entry(entry, operator=None):
+def upsert_dict_entry(entry, operator=None, source="manual"):
     """
     写入/更新一个字典条目（有则覆盖，无则新增），写入变更历史。
 
     ★ 和 upsert_metric 一样：调用方【没带 enabled】就保留库里的开关状态，
       避免"改个取值列表把停用过的字典无声地打开了"。
+    ★ source：页面录入走默认 manual；AI 投喂必须传 "ai"，否则会绕过治理
+      （详见 _derive_gov_status 的注释）。
     """
     _ensure_ready()
     conn = _connect()
     cur = conn.cursor()
     name = entry["name"]
     before = _row_dict(cur, "dict_entries", "name", name)
+    # ★ 护栏：人工整理的字典不被 AI 覆盖（值映射错 = 口径错）
+    if (before or {}).get("source") == "manual" and (source or "").lower() == "ai":
+        conn.close()
+        return False, "已有人工版本，AI 不覆盖"
     action = "update" if before else "create"
     _ts = _now()
     cols = ["name", "dict_type", "field_hint", "keywords", "items", "updated_at"]
     vals = [name, entry.get("dict_type", ""), entry.get("field_hint", ""),
             _to_json(entry.get("keywords", [])), _to_json(entry.get("items", [])), _ts]
+    # ★ 治理状态随写入来源推导（AI→candidate，人工→approved）
+    st = _derive_gov_status(source, (before or {}).get("status"))
+    cols += ["status", "source", "approved_at", "approved_by"]
+    vals += [st, (source or "manual").strip().lower(),
+             _ts if st == "approved" else None,
+             (operator or "manual") if st == "approved" else None]
     if "enabled" in entry:
         cols.append("enabled")
         vals.append(1 if entry["enabled"] else 0)
@@ -1241,6 +1501,7 @@ def upsert_dict_entry(entry, operator=None):
     _record_history(cur, "dict", name, action, before, after, operator)
     conn.commit()
     conn.close()
+    return True, "已保存"
 
 
 def delete_dict_entry(name, operator=None):
@@ -1280,12 +1541,12 @@ def set_dict_enabled(name, enabled, operator=None):
 # ★ Semantic Layer · 实体 / 关系 / 文档 的读写
 # ═══════════════════════════════════════════════════════════
 def get_entities():
-    """取出全部业务实体（P2 层）。返回 [{name,table_name,grain,comment,keywords,enabled,source}]"""
+    """取出全部业务实体（P2 层）。返回 [{name,table_name,grain,comment,keywords,enabled,source,primary_key}]"""
     _ensure_ready()
     conn = _connect()
     cur = conn.cursor()
     rows = cur.execute(
-        "SELECT name, table_name, grain, comment, keywords, enabled, source "
+        "SELECT name, table_name, grain, comment, keywords, enabled, source, primary_key "
         "FROM entities ORDER BY name"
     ).fetchall()
     conn.close()
@@ -1293,7 +1554,33 @@ def get_entities():
         {"name": r[0], "table_name": r[1] or "", "grain": r[2] or "",
          "comment": r[3] or "", "keywords": _from_json(r[4]),
          "enabled": bool(r[5] if len(r) > 5 else 1),
-         "source": (r[6] if len(r) > 6 and r[6] else "manual")}
+         "source": (r[6] if len(r) > 6 and r[6] else "manual"),
+         "primary_key": (_from_json(r[7]) if len(r) > 7 else [])}
+        for r in rows
+    ]
+
+
+def get_entities_with_governance():
+    """取出全部业务实体并附带治理字段（status / version / approved_by）。
+
+    ★ 供【澄清模块】判断「实体映射是否经过业务知识确认」：
+      只有 status=approved 的实体才允许作为澄清候选 / 直接落地；
+      candidate（AI 起草未复核）等非 approved 实体 → 触发阻断（不许静默换表）。
+    """
+    _ensure_ready()
+    conn = _connect()
+    cur = conn.cursor()
+    rows = cur.execute(
+        "SELECT name, table_name, grain, comment, keywords, enabled, source, "
+        "status, version, approved_by FROM entities ORDER BY name"
+    ).fetchall()
+    conn.close()
+    return [
+        {"name": r[0], "table_name": r[1] or "", "grain": r[2] or "",
+         "comment": r[3] or "", "keywords": _from_json(r[4]),
+         "enabled": bool(r[5]), "source": (r[6] or "manual"),
+         "status": (r[7] or "approved"), "version": r[8] or 1,
+         "approved_by": r[9] or ""}
         for r in rows
     ]
 
@@ -1334,22 +1621,30 @@ def upsert_entity(ent, source="manual", operator=None):
     before = _row_dict(cur, "entities", "name", name) or old
     action = "update" if before else "create"
     _ts = _now()
+    # ★ 治理状态随写入来源推导：AI 起草 → candidate（待复核），人工（含"复核后改一遍"）→ approved
+    st = _derive_gov_status(source, (before or {}).get("status"))
+    ap, ab = (_ts, operator or "manual") if st == "approved" else (None, None)
     cur.execute("""
         INSERT INTO entities (name, table_name, grain, comment, keywords, enabled, source,
-                              updated_at, created_at)
-        VALUES (?,?,?,?,?,?,?,?,?)
+                              status, approved_at, approved_by, updated_at, created_at, primary_key)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(name) DO UPDATE SET
-            table_name = excluded.table_name,
-            grain      = excluded.grain,
-            comment    = excluded.comment,
-            keywords   = excluded.keywords,
-            enabled    = excluded.enabled,
-            source     = excluded.source,
-            updated_at = excluded.updated_at,
-            version    = entities.version + 1
+            table_name  = excluded.table_name,
+            grain       = excluded.grain,
+            comment     = excluded.comment,
+            keywords    = excluded.keywords,
+            enabled     = excluded.enabled,
+            source      = excluded.source,
+            status      = excluded.status,
+            approved_at = excluded.approved_at,
+            approved_by = excluded.approved_by,
+            updated_at  = excluded.updated_at,
+            primary_key = excluded.primary_key,
+            version     = entities.version + 1
     """, (name, ent.get("table_name", ""), ent.get("grain", ""),
           ent.get("comment", ""), _to_json(ent.get("keywords", [])),
-          1 if ent.get("enabled", True) else 0, source, _ts, _ts))
+          1 if ent.get("enabled", True) else 0, source, st, ap, ab, _ts, _ts,
+          _to_json(ent.get("primary_key") or [])))
     after = _row_dict(cur, "entities", "name", name)
     _record_history(cur, "entity", name, action, before, after, operator)
     conn.commit()
@@ -1372,12 +1667,13 @@ def delete_entity(name, operator=None):
 
 
 def get_relationships(enabled_only=True):
-    """取出关联/Join 规则（P2 层）。返回 [{id,from_entity,to_entity,join_sql,join_type,cardinality,pre_agg_required,rule_note,enabled}]"""
+    """取出关联/Join 规则（P2 层）。返回 [{id,from_entity,to_entity,join_sql,join_type,cardinality,pre_agg_required,rule_note,enabled,from_columns,to_columns}]"""
     _ensure_ready()
     conn = _connect()
     cur = conn.cursor()
     sql = ("SELECT id, from_entity, to_entity, join_sql, join_type, cardinality, "
-           "pre_agg_required, rule_note, enabled FROM relationships ")
+           "pre_agg_required, rule_note, enabled, from_columns, to_columns, "
+           "allow_auto_join, agg_risk, confidence, scenario FROM relationships ")
     if enabled_only:
         sql += "WHERE enabled = 1 "
     sql += "ORDER BY id"
@@ -1387,13 +1683,267 @@ def get_relationships(enabled_only=True):
         {"id": r[0], "from_entity": r[1] or "", "to_entity": r[2] or "",
          "join_sql": r[3] or "", "join_type": r[4] or "LEFT",
          "cardinality": r[5] or "1:1", "pre_agg_required": bool(r[6]),
-         "rule_note": r[7] or "", "enabled": bool(r[8])}
+         "rule_note": r[7] or "", "enabled": bool(r[8]),
+         "from_columns": (_from_json(r[9]) if len(r) > 9 else []),
+         "to_columns": (_from_json(r[10]) if len(r) > 10 else []),
+         "allow_auto_join": bool(r[11]) if len(r) > 11 else False,
+         "agg_risk": (r[12] or "low") if len(r) > 12 else "low",
+         "confidence": (r[13] or "medium") if len(r) > 13 else "medium",
+         "scenario": (r[14] or "") if len(r) > 14 else ""}
         for r in rows
     ]
 
 
-def upsert_relationship(rel, operator=None):
-    """写入/更新一条关联规则（按 from_entity+to_entity 幂等），写入变更历史。"""
+def get_visible_knowledge_ids(table, id_col="name"):
+    """
+    按治理状态返回「可进生产检索」的对象 id 集合（供 RAG / 语义层过滤）。
+
+    规则（与 governance.py 一致，判定逻辑不在这里重复实现）：
+      approved / 无 status → 可见；
+      candidate            → 仅非严格模式可见（GOVERNANCE_STRICT_STATUS=false）；
+      draft/reviewing/deprecated/rejected/archived → 永不可见。
+
+    参数：
+      table  —— 表名（代码内常量）
+      id_col —— 用于标识对象的 SQL 表达式（代码内常量）。**复合主键的表必须传表达式**，
+                否则同名不同表的行会被挤压成一条，导致过滤错位。例如字段注释的键是
+                "表名.字段名"，就要传 "table_name || '.' || column_name"。
+
+    返回 None 表示"该表没有 status 列，不做状态过滤"（如 kb_docs）。
+    ★ 只读、无副作用；table / id_col 均为代码内常量，不接收外部输入。
+    """
+    import governance as _gov          # 局部导入：避免模块级循环依赖
+    _ensure_ready()
+    conn = _connect()
+    cur = conn.cursor()
+    try:
+        rows = cur.execute("SELECT %s, status FROM %s" % (id_col, table)).fetchall()
+    except Exception:
+        rows = None                    # 没有 status 列（未纳入治理）→ 不过滤
+    conn.close()
+    if rows is None:
+        return None
+    out = set()
+    for oid, st in rows:
+        if _gov.visible_status(st):
+            out.add(oid)
+    return out
+
+
+# ═══════════════════════════════════════════════════════════
+# ★ 知识复核队列 —— 页面「待复核」的统一读写口
+# ═══════════════════════════════════════════════════════════
+#   ★ 为什么要有这张白名单？
+#     页面上点「通过 / 拒绝」必须能精确命中一行，但各层主键形态不同：
+#       指标 / 实体 / 字典 → name
+#       表注释            → table_name
+#       字段注释          → 「表名.字段名」复合键（同名不同表是两条不同的知识）
+#       关系 / 文档       → 自增 id
+#     把这些差异收在白名单里，接口只收 (layer, key)：
+#       ① 上层不用拼 SQL，天然挡掉注入；
+#       ② 以后加一层知识只改这张表，不用改页面和接口。
+_GOV_LAYERS = {
+    "metrics": {
+        "table": "metrics", "label": "指标",
+        "key_expr": "name",
+        "preview": "COALESCE(definition,'')",
+        "keys": ("name",),
+    },
+    "entities": {
+        "table": "entities", "label": "业务实体",
+        "key_expr": "name",
+        "preview": "COALESCE(table_name,'')||' ｜ '||COALESCE(comment,'')",
+        "keys": ("name",),
+    },
+    "table_comments": {
+        "table": "table_comments", "label": "表注释",
+        "key_expr": "table_name",
+        "preview": "COALESCE(comment,'')",
+        "keys": ("table_name",),
+    },
+    "column_comments": {
+        "table": "column_comments", "label": "字段注释",
+        "key_expr": "table_name||'.'||column_name",
+        "preview": "COALESCE(comment,'')",
+        "keys": ("table_name", "column_name"),
+    },
+    "dict_entries": {
+        "table": "dict_entries", "label": "数据字典",
+        "key_expr": "name",
+        "preview": "COALESCE(field_hint,'')||' '||COALESCE(items,'')",
+        "keys": ("name",),
+    },
+    "relationships": {
+        "table": "relationships", "label": "关联规则",
+        "key_expr": "CAST(id AS TEXT)",
+        "preview": "COALESCE(from_entity,'')||' → '||COALESCE(to_entity,'')||' ｜ '||COALESCE(join_sql,'')",
+        "keys": ("id",),
+    },
+    "kb_docs": {
+        "table": "kb_docs", "label": "业务文档",
+        "key_expr": "CAST(id AS TEXT)",
+        "preview": "COALESCE(title,'')||' ｜ '||COALESCE(content,'')",
+        "keys": ("id",),
+    },
+}
+
+
+def _gov_where(layer, key):
+    """
+    把 (layer, key) 翻译成 WHERE 片段 + 参数。key 非法返回 None。
+    ★ 只做"白名单内的固定 SQL 拼装"，不含任何用户输入拼进语句。
+    """
+    spec = _GOV_LAYERS.get(layer)
+    if not spec:
+        return None
+    keys = spec["keys"]
+    if len(keys) == 1:
+        return "%s = ?" % keys[0], (key,)
+    if layer == "column_comments":
+        # 复合键：「表名.字段名」——按第一个点切分，表名里不会有点
+        if "." not in (key or ""):
+            return None
+        t, c = key.split(".", 1)
+        if not t or not c:
+            return None
+        return "table_name = ? AND column_name = ?", (t, c)
+    return None
+
+
+def list_pending_knowledge(statuses=("candidate",), limit=300):
+    """
+    列出待复核（默认 candidate）的知识，给页面「复核队列」用。
+
+    返回 [{layer, label, key, preview, status, source, updated_at}]
+    ★ 这是只读视图：不做任何状态判定，判定交给 governance.visible_status。
+    """
+    _ensure_ready()
+    conn = _connect()
+    cur = conn.cursor()
+    out = []
+    ph = ",".join("?" * len(statuses))
+    for layer, spec in _GOV_LAYERS.items():
+        sql = ("SELECT %s AS k, %s AS preview, status, COALESCE(source,''), "
+               "COALESCE(updated_at,'') FROM %s WHERE status IN (%s) "
+               "ORDER BY updated_at DESC LIMIT ?"
+               % (spec["key_expr"], spec["preview"], spec["table"], ph))
+        try:
+            rows = cur.execute(sql, tuple(statuses) + (limit,)).fetchall()
+        except Exception:
+            continue                       # 老库缺列/缺表 → 跳过这一层，不影响其他层
+        for k, preview, st, src, upd in rows:
+            out.append({
+                "layer": layer, "label": spec["label"], "key": str(k),
+                "preview": (preview or "").strip()[:200],
+                "status": st, "source": src, "updated_at": upd,
+            })
+    conn.close()
+    out.sort(key=lambda x: x["updated_at"] or "", reverse=True)
+    return out
+
+
+def knowledge_status_summary():
+    """
+    各层知识的治理状态计数，给页面显示「待复核 N 条 / 已核准 M 条」。
+
+    返回 {layer: {"label": 中文名, "approved": n, "candidate": n, "rejected": n, "total": n}}
+    """
+    _ensure_ready()
+    conn = _connect()
+    cur = conn.cursor()
+    out = {}
+    for layer, spec in _GOV_LAYERS.items():
+        try:
+            rows = cur.execute(
+                "SELECT COALESCE(status,''), COUNT(*) FROM %s GROUP BY 1" % spec["table"]
+            ).fetchall()
+        except Exception:
+            continue
+        d = {"label": spec["label"], "approved": 0, "candidate": 0, "rejected": 0, "total": 0}
+        for st, n in rows:
+            st = (st or "").strip().lower()
+            d["total"] += n
+            if st in ("", "approved"):
+                d["approved"] += n
+            elif st in d:
+                d[st] += n
+        out[layer] = d
+    conn.close()
+    return out
+
+
+def set_knowledge_status(layer, key, status, operator=None):
+    """
+    人工核准 / 拒绝一条知识 —— 页面「通过 / 拒绝」按钮的唯一落库口。
+
+    ★ 为什么必须走这里，而不是让页面直接改表？
+      · 状态不是孤立字段：approved 要同时落 approved_at / approved_by，
+        否则审计链断了（"谁批的、什么时候批的"查不到）；
+      · 每次人工裁决都要写 knowledge_history + audit_log，
+        否则出了问题没法回溯"这条口径什么时候被人放开的"。
+    """
+    st = (status or "").strip().lower()
+    if st not in ("approved", "rejected", "candidate"):
+        return False, "非法状态：%s" % status
+    wh = _gov_where(layer, key)
+    if not wh:
+        return False, "未知的知识层级或 key 格式不对"
+    where_sql, args = wh
+    spec = _GOV_LAYERS[layer]
+
+    _ensure_ready()
+    conn = _connect()
+    cur = conn.cursor()
+    row = cur.execute("SELECT * FROM %s WHERE %s" % (spec["table"], where_sql), args).fetchone()
+    if not row:
+        conn.close()
+        return False, "知识不存在：%s / %s" % (layer, key)
+    cols = [d[0] for d in cur.description]
+    before = dict(zip(cols, row))
+
+    ts = _now()
+    ap = ts if st == "approved" else None
+    ab = (operator or "manual") if st == "approved" else None
+    cur.execute(
+        "UPDATE %s SET status=?, approved_at=?, approved_by=?, updated_at=? WHERE %s"
+        % (spec["table"], where_sql),
+        (st, ap, ab, ts) + args)
+
+    row2 = cur.execute("SELECT * FROM %s WHERE %s" % (spec["table"], where_sql), args).fetchone()
+    after = dict(zip(cols, row2)) if row2 else None
+    _record_history(cur, layer, key,
+                    "approve" if st == "approved" else "reject", before, after, operator)
+
+    # audit_log 是治理迁移建的，老库可能没有 → 防御式写入，不能因为缺表就回滚主流程
+    try:
+        cur.execute("""INSERT OR REPLACE INTO audit_log
+            (audit_id, actor_id, action, object_type, object_id, version_no,
+             before_hash, after_hash, request_id, occurred_at, detail)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            ("ui:%s:%s:%s" % (layer, key, ts), operator or "manual",
+             "approve" if st == "approved" else "reject",
+             layer, key, None, None, None, None, ts,
+             _to_json({"review": "ui_manual", "to_status": st,
+                       "before_status": before.get("status")})))
+    except Exception:
+        pass
+
+    conn.commit()
+    conn.close()
+    if st == "approved":
+        return True, "已核准（重建索引后进入检索）"
+    if st == "rejected":
+        return True, "已拒绝（不会进入检索）"
+    return True, "已退回待复核"
+
+
+def upsert_relationship(rel, operator=None, source="manual"):
+    """写入/更新一条关联规则（按 from_entity+to_entity 幂等），写入变更历史。
+
+    ★ source：页面录入走默认 manual（= 人工核准）；AI 投喂必须传 "ai"，
+      否则 AI 推断的 JOIN 规则会被当成已核准，直接参与生产查询（风险高于注释：
+      一条错的 JOIN 会造成数据翻倍/漏数，比一句错的字段描述严重得多）。
+    """
     _ensure_ready()
     conn = _connect()
     cur = conn.cursor()
@@ -1403,32 +1953,63 @@ def upsert_relationship(rel, operator=None):
         (fe, te)).fetchone()
     rel_id = row[0] if row else None
     before = _row_dict(cur, "relationships", "id", rel_id) if rel_id else None
+    # ★ 护栏：人工确认的 JOIN 规则不被 AI 覆盖（错的 JOIN 会让数据翻倍/漏数）
+    if (before or {}).get("source") == "manual" and (source or "").lower() == "ai":
+        conn.close()
+        return False, "已有人工版本，AI 不覆盖"
     action = "update" if before else "create"
     _ts = _now()
+    # ★ 治理状态随写入来源推导（AI→candidate，人工→approved）
+    st = _derive_gov_status(source, (before or {}).get("status"))
+    ap = _ts if st == "approved" else None
+    ab = (operator or "manual") if st == "approved" else None
+    # ★ P0-3 新增治理字段：未显式提供时保留原值（旧调用方不带这些字段，
+    #   避免把迁移回填值重置为默认）
+    b = before or {}
+    keep_agg = rel.get("agg_risk") if "agg_risk" in rel else (b.get("agg_risk") or "low")
+    keep_conf = rel.get("confidence") if "confidence" in rel else (b.get("confidence") or "medium")
+    keep_auto = rel.get("allow_auto_join") if "allow_auto_join" in rel else \
+        (b.get("allow_auto_join") if b.get("allow_auto_join") is not None else 0)
+    keep_scen = rel.get("scenario") if "scenario" in rel else (b.get("scenario") or "")
     if row:
         cur.execute("""
             UPDATE relationships SET join_sql=?, join_type=?, cardinality=?,
                 pre_agg_required=?, rule_note=?, enabled=?,
+                status=?, source=?, approved_at=?, approved_by=?,
+                from_columns=?, to_columns=?,
+                allow_auto_join=?, agg_risk=?, confidence=?, scenario=?,
                 updated_at=?, version=relationships.version+1 WHERE id=?
         """, (rel.get("join_sql", ""), rel.get("join_type", "LEFT"),
               rel.get("cardinality", "1:1"),
               1 if rel.get("pre_agg_required") else 0, rel.get("rule_note", ""),
-              1 if rel.get("enabled", True) else 0, _ts, row[0]))
+              1 if rel.get("enabled", True) else 0, st,
+              (source or "manual").strip().lower(), ap, ab,
+              _to_json(rel.get("from_columns") or []), _to_json(rel.get("to_columns") or []),
+              1 if keep_auto else 0, keep_agg, keep_conf, keep_scen,
+              _ts, row[0]))
     else:
         cur.execute("""
             INSERT INTO relationships
                 (from_entity, to_entity, join_sql, join_type, cardinality,
-                 pre_agg_required, rule_note, enabled, updated_at, created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?)
+                 pre_agg_required, rule_note, enabled, status, source,
+                 approved_at, approved_by, from_columns, to_columns,
+                 allow_auto_join, agg_risk, confidence, scenario,
+                 updated_at, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (fe, te, rel.get("join_sql", ""), rel.get("join_type", "LEFT"),
               rel.get("cardinality", "1:1"),
               1 if rel.get("pre_agg_required") else 0, rel.get("rule_note", ""),
-              1 if rel.get("enabled", True) else 0, _ts, _ts))
+              1 if rel.get("enabled", True) else 0, st,
+              (source or "manual").strip().lower(), ap, ab,
+              _to_json(rel.get("from_columns") or []), _to_json(rel.get("to_columns") or []),
+              1 if keep_auto else 0, keep_agg, keep_conf, keep_scen,
+              _ts, _ts))
         rel_id = cur.lastrowid
     after = _row_dict(cur, "relationships", "id", rel_id)
     _record_history(cur, "relationship", rel_id, action, before, after, operator)
     conn.commit()
     conn.close()
+    return True, "已保存"
 
 
 def delete_relationship(rel_id, operator=None):
@@ -1463,35 +2044,51 @@ def get_kb_docs(enabled_only=True):
     ]
 
 
-def upsert_kb_doc(doc, operator=None):
-    """写入/更新一条业务文档，写入变更历史。"""
+def upsert_kb_doc(doc, operator=None, source="manual"):
+    """写入/更新一条业务文档，写入变更历史。
+
+    ★ source：页面录入走 manual（= 人工核准）；AI 生成的业务文档传 "ai"，
+      落 candidate 待复核 —— 文档是 P4 层，优先级最低但不能当"免检通道"。
+    """
     _ensure_ready()
     conn = _connect()
     cur = conn.cursor()
     doc_id = doc.get("id")
     before = _row_dict(cur, "kb_docs", "id", doc_id) if doc_id else None
+    # ★ 护栏：人工文档不被 AI 覆盖
+    if (before or {}).get("source") == "manual" and (source or "").lower() == "ai":
+        conn.close()
+        return False, "已有人工版本，AI 不覆盖"
     action = "update" if before else "create"
     _ts = _now()
+    # ★ 治理状态随写入来源推导
+    st = _derive_gov_status(source, (before or {}).get("status"))
+    ap = _ts if st == "approved" else None
+    ab = (operator or "manual") if st == "approved" else None
     if doc_id:
         cur.execute("""
             UPDATE kb_docs SET title=?, content=?, keywords=?, priority=?, enabled=?,
+                source=?, status=?, approved_at=?, approved_by=?,
                 updated_at=?, version=kb_docs.version+1
             WHERE id=?
         """, (doc.get("title", ""), doc.get("content", ""),
               _to_json(doc.get("keywords", [])), doc.get("priority", 4),
-              1 if doc.get("enabled", True) else 0, _ts, doc_id))
+              1 if doc.get("enabled", True) else 0, source, st, ap, ab, _ts, doc_id))
     else:
         cur.execute("""
-            INSERT INTO kb_docs (title, content, keywords, priority, enabled, updated_at, created_at)
-            VALUES (?,?,?,?,?,?,?)
+            INSERT INTO kb_docs (title, content, keywords, priority, enabled,
+                                 source, status, approved_at, approved_by,
+                                 updated_at, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)
         """, (doc.get("title", ""), doc.get("content", ""),
               _to_json(doc.get("keywords", [])), doc.get("priority", 4),
-              1 if doc.get("enabled", True) else 0, _ts, _ts))
+              1 if doc.get("enabled", True) else 0, source, st, ap, ab, _ts, _ts))
         doc_id = cur.lastrowid
     after = _row_dict(cur, "kb_docs", "id", doc_id)
     _record_history(cur, "kb_doc", doc_id, action, before, after, operator)
     conn.commit()
     conn.close()
+    return True, "已保存"
 
 
 def delete_kb_doc(doc_id, operator=None):
@@ -1638,7 +2235,7 @@ def set_prompt(key, content):
     conn.close()
 
 
-def upsert_metric(metric, operator=None):
+def upsert_metric(metric, operator=None, source="manual"):
     """
     写入/更新一个指标（有则覆盖，无则新增），并写入变更历史。
 
@@ -1648,12 +2245,18 @@ def upsert_metric(metric, operator=None):
       depends_metrics / conflict_key —— 带就写，没带就不动（保留原值/默认值）。
     ★ 知识治理（GAP-2）：每次变更写 knowledge_history（before/after 快照），
       updated_at/updated_by 记时间与操作人，version 每次 +1，created_at 仅创建时记。
+    ★ source：页面录入走默认 manual（= 人工核准）；AI 投喂必须传 "ai"，
+      否则 AI 自造的指标会被当成"已核准"直接进生产检索（绕过治理）。
     """
     _ensure_ready()
     conn = _connect()
     cur = conn.cursor()
 
     before = _row_dict(cur, "metrics", "name", metric["name"])
+    # ★ 护栏：人工口径不被 AI 覆盖（指标是 P1 层，一条被冲掉整个召回就变味）
+    if (before or {}).get("source") == "manual" and (source or "").lower() == "ai":
+        conn.close()
+        return False, "已有人工版本，AI 不覆盖"
     action = "update" if before else "create"
 
     cols = ["name", "keywords", "definition", "doc", "tables"]
@@ -1665,6 +2268,10 @@ def upsert_metric(metric, operator=None):
         if metric.get(cname) is not None:
             cols.append(cname)
             vals.append(metric[cname])
+    # ★ OSSIE 标准表达式：显式带就写（空串 = 清除）
+    if metric.get("expression") is not None:
+        cols.append("expression")
+        vals.append(metric["expression"])
     if metric.get("depends_metrics") is not None:
         cols.append("depends_metrics")
         vals.append(_to_json(metric["depends_metrics"]))
@@ -1685,6 +2292,12 @@ def upsert_metric(metric, operator=None):
 
     # ★ 元数据：updated_at 每次写都记；updated_by 带操作人则记；created_at 仅创建记
     _ts = _now()
+    # ★ 治理状态随写入来源推导（AI→candidate，人工→approved）
+    st = _derive_gov_status(source, (before or {}).get("status"))
+    cols += ["status", "source", "approved_at", "approved_by"]
+    vals += [st, (source or "manual").strip().lower(),
+             _ts if st == "approved" else None,
+             (operator or "manual") if st == "approved" else None]
     cols.append("updated_at")
     vals.append(_ts)
     if operator is not None:
@@ -1708,6 +2321,7 @@ def upsert_metric(metric, operator=None):
     _record_history(cur, "metric", metric["name"], action, before, after, operator)
     conn.commit()
     conn.close()
+    return True, "已保存"
 
 
 def delete_metric(name, operator=None):
@@ -1724,6 +2338,35 @@ def delete_metric(name, operator=None):
     return affected > 0
 
 
+def _derive_gov_status(source, before_status=None):
+    """
+    写入知识时推导治理状态 —— 全库唯一的 status 决策点（不要再在别处各写一套）。
+
+    ★ 为什么必须有这个函数？
+      治理要求"只有 approved 才能进生产检索"，但 status 之前只有迁移脚本会写，
+      所有写入函数都不写。结果会同时出两种反向的错：
+        · 人在页面上改一条 AI 注释 → source 变成 manual，status 却停在 candidate
+          → 严格模式下它依然进不了 RAG。前端写着"改一遍就生效"，承诺直接落空。
+        · AI 新写一条知识 → 吃到建表默认值 'approved'（迁移时定的默认）
+          → 台账显示"已核准"，其实是机器随手写的，审计记录失真。
+
+    规则（人工优先，AI 收敛）：
+      manual → approved     人写的 / 人改过的 = 人工已核准，可直接进检索；
+      ai     → candidate    必须经人复核才进检索；
+      ★ 例外：AI 不得覆盖人的否定结论 —— 原状态是 rejected/deprecated/archived
+        时原样保留，避免机器把一条已明确判错的知识"自动复活"。
+
+    参数 before_status 传该对象写入前的状态（新建时传 None）。
+    """
+    s = (source or "manual").strip().lower()
+    cur_st = (before_status or "").strip().lower()
+    if s == "manual":
+        return "approved"                       # 人工录入 / 人工复核 = 核准
+    if cur_st in ("rejected", "deprecated", "archived"):
+        return cur_st                           # 人类判过的死结论，AI 不许翻案
+    return "candidate"                          # AI 起草 → 待复核
+
+
 def set_table_comment(table_name, comment, source="manual", operator=None):
     """
     写入/更新一张表的业务注释（写入变更历史）
@@ -1736,17 +2379,29 @@ def set_table_comment(table_name, comment, source="manual", operator=None):
     conn = _connect()
     cur = conn.cursor()
     before = _row_dict(cur, "table_comments", "table_name", table_name)
+    # ★ 护栏：人工版不被 AI 覆盖（文档里一直是这么承诺的，但代码之前没实现——
+    #   结果 AI 批量重跑会把人核准过的注释换回机器稿，且状态被降级）。
+    if (before or {}).get("source") == "manual" and (source or "").lower() == "ai":
+        conn.close()
+        return False
     action = "update" if before else "create"
     _ts = _now()
+    # ★ 治理状态随写入来源自动推导：AI 起草 → candidate（待复核），人工 → approved
+    st = _derive_gov_status(source, (before or {}).get("status"))
+    ap, ab = (_ts, operator or "manual") if st == "approved" else (None, None)
     cur.execute("""
-        INSERT INTO table_comments (table_name, comment, source, updated_at, created_at)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO table_comments (table_name, comment, source, status,
+                                    approved_at, approved_by, updated_at, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(table_name) DO UPDATE SET
-            comment = excluded.comment,
-            source  = excluded.source,
-            updated_at = excluded.updated_at,
-            version = table_comments.version + 1
-    """, (table_name, comment, source, _ts, _ts))
+            comment     = excluded.comment,
+            source      = excluded.source,
+            status      = excluded.status,
+            approved_at = excluded.approved_at,
+            approved_by = excluded.approved_by,
+            updated_at  = excluded.updated_at,
+            version     = table_comments.version + 1
+    """, (table_name, comment, source, st, ap, ab, _ts, _ts))
     after = _row_dict(cur, "table_comments", "table_name", table_name)
     _record_history(cur, "table_comment", table_name, action, before, after, operator)
     conn.commit()
@@ -1777,19 +2432,29 @@ def set_column_comment(table_name, column_name, comment, source="manual", operat
         return dict(zip(cols, row)) if row else None
 
     before = _snap()
+    # ★ 护栏：人工版不被 AI 覆盖（否则"改一遍就转人工版"的承诺是假的）
+    if (before or {}).get("source") == "manual" and (source or "").lower() == "ai":
+        conn.close()
+        return 0
     action = "update" if before else "create"
     _ts = _now()
     if comment and comment.strip():
+        # ★ 治理状态随写入来源推导：AI 起草 → candidate（待复核），人工 → approved
+        st = _derive_gov_status(source, (before or {}).get("status"))
+        ap, ab = (_ts, operator or "manual") if st == "approved" else (None, None)
         cur.execute("""
-            INSERT INTO column_comments (table_name, column_name, comment, source,
-                                         updated_at, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO column_comments (table_name, column_name, comment, source, status,
+                                         approved_at, approved_by, updated_at, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(table_name, column_name)
-            DO UPDATE SET comment = excluded.comment,
-                          source  = excluded.source,
-                          updated_at = excluded.updated_at,
+            DO UPDATE SET comment     = excluded.comment,
+                          source      = excluded.source,
+                          status      = excluded.status,
+                          approved_at = excluded.approved_at,
+                          approved_by = excluded.approved_by,
+                          updated_at  = excluded.updated_at,
                           version = column_comments.version + 1
-        """, (table_name, column_name, comment.strip(), source, _ts, _ts))
+        """, (table_name, column_name, comment.strip(), source, st, ap, ab, _ts, _ts))
         affected = 1
         after = _snap()
         _record_history(cur, "column_comment", f"{table_name}.{column_name}",
@@ -2590,6 +3255,146 @@ def purge_expired_sessions():
 
 
 # ═══════════════════════════════════════════════════════════
+# ⑨.5-b ★ 多轮澄清会话持久化（Query Clarification）
+# ═══════════════════════════════════════════════════════════
+#   【权限规则】澄清会话是"某账号某次查询"的私有状态：
+#     读/写都必须校验 username 归属，否则别人能读到你的候选、篡改你的选择。
+#     函数层校验（不靠前端藏按钮），与 query_records 的审核同一思路。
+# ═══════════════════════════════════════════════════════════
+def clarify_save(state):
+    """保存/更新一次澄清会话状态。state 里的逻辑字段 → 各列（JSON 序列化）。"""
+    _ensure_ready()
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO clarify_sessions
+           (id, username, session_token, original_question, intent,
+            confirmed_slots, pending_clarifications, candidate_evidence,
+            clarification_round, status, reason, final_sql, execution_result,
+            created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(id) DO UPDATE SET
+             username=excluded.username, session_token=excluded.session_token,
+             original_question=excluded.original_question, intent=excluded.intent,
+             confirmed_slots=excluded.confirmed_slots,
+             pending_clarifications=excluded.pending_clarifications,
+             candidate_evidence=excluded.candidate_evidence,
+             clarification_round=excluded.clarification_round,
+             status=excluded.status, reason=excluded.reason,
+             final_sql=excluded.final_sql, execution_result=excluded.execution_result,
+             updated_at=excluded.updated_at""",
+        (state.get("query_id"), state.get("username"), state.get("session_id"),
+         state.get("original_question"),
+         _to_json(state.get("intent")), _to_json(state.get("confirmed_slots")),
+         _to_json(state.get("pending_clarifications")), _to_json(state.get("candidate_evidence")),
+         int(state.get("clarification_round") or 0), state.get("status"),
+         state.get("reason"), state.get("final_sql") or "",
+         _to_json(state.get("execution_result")),
+         state.get("created_at") or _now(), state.get("updated_at") or _now()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def clarify_load(query_id, username=None):
+    """按 query_id 读取澄清状态。传 username 时校验归属，不属于则返回 None（防越权）。"""
+    _ensure_ready()
+    conn = _connect()
+    cur = conn.cursor()
+    row = cur.execute("SELECT * FROM clarify_sessions WHERE id = ?", (query_id,)).fetchone()
+    cols = [d[0] for d in cur.description]
+    conn.close()
+    if not row:
+        return None
+    d = dict(zip(cols, row))
+    if username is not None and d.get("username") != username:
+        return None
+    return {
+        "query_id": d["id"], "username": d["username"], "session_id": d["session_token"],
+        "original_question": d["original_question"], "intent": _from_json(d["intent"]),
+        "confirmed_slots": _from_json(d["confirmed_slots"]),
+        "pending_clarifications": _from_json(d["pending_clarifications"]),
+        "candidate_evidence": _from_json(d["candidate_evidence"]),
+        "clarification_round": d["clarification_round"], "status": d["status"],
+        "reason": d["reason"], "final_sql": d["final_sql"],
+        "execution_result": _from_json(d["execution_result"]),
+        "created_at": d["created_at"], "updated_at": d["updated_at"],
+    }
+
+
+def clarify_delete(query_id, username=None):
+    """删除/清理一次澄清会话（取消/完成后由调用方决定是否保留）。"""
+    _ensure_ready()
+    conn = _connect()
+    cur = conn.cursor()
+    if username is not None:
+        cur.execute("DELETE FROM clarify_sessions WHERE id = ? AND username = ?",
+                    (query_id, username))
+    else:
+        cur.execute("DELETE FROM clarify_sessions WHERE id = ?", (query_id,))
+    n = cur.rowcount
+    conn.commit()
+    conn.close()
+    return n
+
+
+# ═══════════════════════════════════════════════════════════
+# ★ 查询上下文（自然语言增量修改锚点）
+#   一次取数（成功或失败）完成后，把「原问题 / 结构化意图 / SQL / 状态」持久化，
+#   前端在后续追问/修改时带上 context_id，后端据此做【增量修改】而非全新查询。
+#   按 username 归属 + 行级校验，防止越权复用他人上下文。
+# ═══════════════════════════════════════════════════════════
+def save_query_context(username, ctx_dict):
+    """保存一次查询上下文，返回新生成的 context_id。
+
+    ctx_dict 约定字段（均由调用方组装，这里只负责存储）：
+        original_question / final_question / understanding / sql /
+        ok / error / tables / metrics / status
+    """
+    _ensure_ready()
+    import secrets as _secrets
+    cid = _secrets.token_urlsafe(12)
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO query_context (id, username, payload, created_at) VALUES (?, ?, ?, ?)",
+        (cid, username or "", _to_json(ctx_dict), _now()),
+    )
+    conn.commit()
+    conn.close()
+    return cid
+
+
+def load_query_context(context_id, username=None):
+    """读取查询上下文（归属校验：username 非空时必须一致，防越权）。
+
+    返回 dict（payload 反序列化）；不存在或越权返回 None。
+    """
+    _ensure_ready()
+    conn = _connect()
+    cur = conn.cursor()
+    row = cur.execute("SELECT * FROM query_context WHERE id = ?",
+                      (context_id,)).fetchone()
+    conn.close()
+    if not row:
+        return None
+    # 直接按列名取（cursor 未设 row_factory，用索引 + 已知列序）
+    cols = ["id", "username", "payload", "created_at"]
+    rec = dict(zip(cols, row)) if row else None
+    if rec is None:
+        return None
+    # ★ 归属校验（防越权）：调用方身份必须与存储的 username 一致；
+    #   None / 空串统一视作"无身份"，只能读到同样无身份的上下文，不能读他人。
+    if (rec.get("username") or "") != (username or ""):
+        return None
+    try:
+        rec["payload"] = json.loads(rec["payload"] or "{}")
+    except Exception:
+        rec["payload"] = {}
+    return rec
+
+
+# ═══════════════════════════════════════════════════════════
 # ⑩ ★ 取数记录 + 审核（个人历史 / 管理员复核）
 # ═══════════════════════════════════════════════════════════
 #  【两条核心规则】
@@ -2622,9 +3427,10 @@ def add_query_record(item):
         INSERT INTO query_records
             (username, question, sql, ok, tables, metrics, dicts,
              columns, row_count, result_preview, answer,
-             info, attempts, pipeline, understanding,
+             info, attempts, pipeline, understanding, error,
+             req_verdict, req_findings, degraded, degrade_reason, trace_json,
              review_status, created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'none', ?)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'none', ?)
     """, (
         item.get("username", ""),
         item.get("question", ""),
@@ -2643,12 +3449,58 @@ def add_query_record(item):
         #   ★ 查询理解存 JSON：它是"当时模型怎么理解这个问题的"证据，
         #     审核时要靠它判断"是口径错还是理解错"——没有它只能猜。
         _to_json(item.get("understanding")) if item.get("understanding") else "",
+        #   ★ 执行错误原文（可能较长，截断存）：失败案例归因的唯一依据
+        (item.get("error") or "")[:2000],
+        #   ★ 需求一致性审核结论（独立成列，便于统计通过率/误拦率）
+        item.get("req_verdict") or "",
+        #   ★ 审核发现的问题（JSON 截断存）：复盘"为什么这次判不通过"的唯一依据
+        (_to_json(item.get("req_findings")) if item.get("req_findings") else "")[:4000],
+        #   ★ 双流水线收敛：统一主流程可观测性（fail-closed / 异常原因 / 各阶段耗时）
+        1 if item.get("degraded") else 0,
+        (item.get("degrade_reason") or "")[:1000],
+        (_to_json(item.get("trace")) if item.get("trace") else "")[:4000],
         now,
     ))
     rid = cur.lastrowid
     conn.commit()
     conn.close()
     return rid
+
+
+def _chain_from_record(d):
+    """用落库字段还原「状态链」（历史回看 / 审核页用）。
+
+    ★ 为什么要在 config_store 里还原，而不是让前端自己拼？
+      前端拼的话，每个用到记录的地方都得拼一遍 —— 只要漏一处，那一处就会显示成
+      "执行成功=全绿"。这正是本项目已经踩过的坑（understanding 曾经只在成功分支补，
+      失败分支全空）。放在记录转字典这一步，所有消费者自动拿到同一份结论。
+    ★ 为什么标 partial=True？
+      落库只存了 ok / pipeline / req_verdict 这几列，**没有**存 gate_passed 与
+      result_sane 的原始值。还原出来的只是"能推出来的部分"，不能假装和当时一模一样：
+        · gate_passed：执行成功 ⇒ 闸门必过（True）；失败时无法区分是闸门拦的还是执行错（None）
+        · executed   ：老记录只有 ok，分不出"执行了但失败"（None）
+      前端看到 partial 就该在界面上说明"历史记录，部分状态未留存"，而不是画个绿勾糊过去。
+    """
+    sql = (d.get("sql") or "").strip()
+    ok = bool(d.get("ok"))
+    req = (d.get("req_verdict") or "").strip() or "skipped"
+    rs = d.get("review_status") or "none"
+    return {
+        "generated": bool(sql),
+        "gate_passed": True if ok else None,
+        "requirement_verdict": req,
+        "executed": True if ok else None,
+        "exec_ok": ok,
+        "result_sane": None,
+        # ★ 业务是否已核 = 人工审核是否通过（唯一事实源就是 review_status，不另存一份，
+        #   否则两边必然漂移：审核撤销了、链上的 True 还留着）
+        #   ★ 三态而非两态：没提交/待审 → None（"还没结论"），
+        #     不能算成 False —— False 在界面上是"业务未通过"，会把"没人看过"说成"被否了"。
+        "business_verified": {"approved": True, "rejected": False}.get(rs),
+        "requirement_fulfilled": None,
+        "requirement_attempts": 0,
+        "partial": True,
+    }
 
 
 def _record_row_to_dict(cols, row):
@@ -2666,10 +3518,14 @@ def _record_row_to_dict(cols, row):
         d[k] = _from_json(d.get(k)) or []
     # 查询理解是 JSON（可能为空/老数据）
     d["understanding"] = _from_json(d.get("understanding")) or None
+    # 需求审核发现的问题也是 JSON（老记录没有该列 → 空列表，不给前端 None）
+    d["req_findings"] = _from_json(d.get("req_findings")) or []
     d["ok"] = bool(d.get("ok"))
     d["attempts"] = int(d.get("attempts") or 0)
     d["review_status_zh"] = REVIEW_STATUS_ZH.get(d.get("review_status"), d.get("review_status"))
     d["remind_count"] = int(d.get("remind_count") or 0)
+    # ★ 状态链（四徽章的历史回看口径）：见 _chain_from_record 的注释
+    d["status_chain"] = _chain_from_record(d)
     return d
 
 
@@ -2768,23 +3624,44 @@ def remind_review(rid, username):
     return get_query_record(rid)
 
 
-def review_record(rid, reviewer, status, note=""):
+# ★ L4 业务确认分类（P0-2）：审核通过/驳回时，管理员可给「结论类别」，
+#   便于统计"我们最常错在哪一类"—— 对齐 FEEDBACK_REASONS 的语义，收敛为 8 类。
+CONFIRM_REASONS = {
+    "correct":         "正确",
+    "wrong_metric":    "指标口径错误",
+    "wrong_time":      "时间范围错误",
+    "wrong_scope":     "数据范围错误",
+    "join_dup":        "JOIN 重复统计",
+    "wrong_enum":      "枚举条件错误",
+    "result_mismatch": "结果不符合业务认知",
+    "other":           "其他问题",
+}
+
+
+def review_record(rid, reviewer, status, note="", confirm_reason=""):
     """
     管理员给出审核结论：approved / rejected。
+    ★ confirm_reason 是可选结论类别（8 类，见 CONFIRM_REASONS），
+      驳回时强烈建议必填，用于根因统计。
 
     ★ 结论必须带"谁审的 + 什么时间"，否则过两个月没人知道该找谁问。
     ★ note 强烈建议写清"口径对不对、错在哪"，空备注的审核等于没审。
     """
     if status not in ("approved", "rejected"):
         raise ValueError(f"未知审核结论：{status}")
+    if confirm_reason and confirm_reason not in CONFIRM_REASONS:
+        raise ValueError(f"未知确认分类：{confirm_reason}")
     rec = get_query_record(rid)
     if not rec:
         raise ValueError(f"记录不存在：{rid}")
     conn = _connect()
     cur = conn.cursor()
     cur.execute("""UPDATE query_records
-                   SET review_status=?, reviewer=?, review_note=?, reviewed_at=?
-                   WHERE id=?""", (status, reviewer, note or "", _now(), rid))
+                   SET review_status=?, reviewer=?, review_note=?, reviewed_at=?,
+                       confirm_reason=?
+                   WHERE id=?""",
+                (status, reviewer, note or "", _now(),
+                 confirm_reason or None, rid))
     conn.commit()
     conn.close()
     return get_query_record(rid)
@@ -2800,6 +3677,79 @@ def count_pending_reviews():
     ).fetchone()[0]
     conn.close()
     return n
+
+
+def dashboard_sql_quality():
+    """P0 看板 · SQL 质量聚合（全部来自 query_records 真实数据，不估算）。
+
+    ★ 口径说明（对齐任务书 §6.3 的"分母/分子/统计范围"）：
+      - 生成成功率：有 SQL 的记录 / 全部记录
+      - 执行成功率：ok=1 / 有 SQL 的记录
+      - 校验通过率：执行成功 ⇒ 闸门必过（成功记录里闸门必过），故用
+        gate_passed 无法从旧列直接还原；这里以「ok=1 且非空 SQL」为校验通过下限，
+        真实校验通过率需依赖 evaluation 报告的 sql_valid_pass_rate。
+      - 平均自愈次数：avg(attempts)
+      - JOIN 相关错误：feedback 里 reason in (join_dup, agg_grain) 的条数
+    """
+    _ensure_ready()
+    conn = _connect()
+    cur = conn.cursor()
+    total = cur.execute("SELECT COUNT(*) FROM query_records").fetchone()[0]
+    with_sql = cur.execute("SELECT COUNT(*) FROM query_records WHERE sql IS NOT NULL AND sql != ''").fetchone()[0]
+    exec_ok = cur.execute("SELECT COUNT(*) FROM query_records WHERE ok=1").fetchone()[0]
+    avg_attempts = cur.execute("SELECT AVG(attempts) FROM query_records").fetchone()[0]
+    business_verified = cur.execute(
+        "SELECT COUNT(*) FROM query_records WHERE review_status='approved'").fetchone()[0]
+    pending = cur.execute("SELECT COUNT(*) FROM query_records WHERE review_status='pending'").fetchone()[0]
+    join_errors = cur.execute(
+        "SELECT COUNT(*) FROM feedbacks WHERE reason IN ('join_dup','agg_grain')").fetchone()[0]
+    conn.close()
+
+    def _pct(n, d):
+        return round(n / d, 4) if d else None
+
+    return {
+        "total_records": total,
+        "generated_rate": _pct(with_sql, total),
+        "exec_success_rate": _pct(exec_ok, with_sql),
+        "avg_attempts": round(avg_attempts, 2) if avg_attempts is not None else None,
+        "business_verified": business_verified,
+        "business_verified_rate": _pct(business_verified, total),
+        "pending_reviews": pending,
+        "join_errors": join_errors,
+    }
+
+
+def dashboard_feedback():
+    """P0 看板 · 反馈聚合（反馈率 / 解决率 / 根因分布 / 最近反馈）。"""
+    _ensure_ready()
+    conn = _connect()
+    cur = conn.cursor()
+    total = cur.execute("SELECT COUNT(*) FROM feedbacks").fetchone()[0]
+    resolved = cur.execute("SELECT COUNT(*) FROM feedbacks WHERE status='resolved'").fetchone()[0]
+    pending = cur.execute("SELECT COUNT(*) FROM feedbacks WHERE status='pending'").fetchone()[0]
+    by_reason = {r[0]: r[1] for r in cur.execute(
+        "SELECT reason, COUNT(*) FROM feedbacks GROUP BY reason").fetchall()}
+    # ★ 最近反馈（真实记录，问题/原因截断展示，不泄露长 SQL 全文）
+    recent = [{"id": r[0], "question": (r[1] or "")[:80], "reason": r[2],
+               "status": r[3], "note": (r[4] or "")[:80], "created_at": r[5]}
+              for r in cur.execute(
+        "SELECT id, question, reason, status, note, created_at "
+        "FROM feedbacks ORDER BY created_at DESC LIMIT 5").fetchall()]
+    conn.close()
+
+    def _pct(n, d):
+        return round(n / d, 4) if d else None
+
+    return {
+        "total": total,
+        "resolved": resolved,
+        "pending": pending,
+        "resolution_rate": _pct(resolved, total),
+        "by_reason": by_reason,
+        "recent": recent,
+    }
+
 
 
 def count_my_submissions(username):
@@ -3528,3 +4478,716 @@ def set_user_attributes(username, attrs):
     conn.commit()
     conn.close()
     return {"ok": True, "username": username}
+
+
+# ═══════════════════════════════════════════════════════════
+# OSSIE 融合式改造：业务主题 + 字段维度属性 + 指标标准表达式
+# ═══════════════════════════════════════════════════════════
+# ★ 原则：只 ALTER TABLE ADD COLUMN + CREATE TABLE IF NOT EXISTS（幂等，只增不改）。
+#   现有知识表是唯一事实源，OSSIE 对象是派生视图，本迁移只为「融合式映射」补元数据。
+def _migrate_fusion_schema(cur):
+    """融合式改造的元数据列（幂等）。
+
+    ① data_domains 加 domain_type：区分「数据域」（data_domain）与「业务主题」（business_topic）。
+       —— 复用空表 data_domains 作业务主题容器，不新建重复表（决策 1）。
+    ② topic_assets：业务主题 → 资产引用（指针，非副本），满足「不重复存储」。
+    ③ column_comments 加 dimension_type：字段维度属性（time/geo/status/type/channel，可空）。
+       —— Field 维度属性模型，不新增独立维度表（决策 2）。
+    ④ metrics 加 expression + expression_status：标准 SQL 表达式 + 审核状态。
+       —— 指标 expression 提取 + 人工复核；expression_status='approved' 才作权威口径（决策 5）。
+    """
+    # ① data_domains.domain_type
+    try:
+        cols = [r[1] for r in cur.execute("PRAGMA table_info(data_domains)").fetchall()]
+        if "domain_type" not in cols:
+            cur.execute("ALTER TABLE data_domains ADD COLUMN domain_type TEXT DEFAULT 'data_domain'")
+    except Exception:
+        pass
+
+    # ② topic_assets（业务主题 → 资产引用，主键去重）
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS topic_assets (
+            topic_name  TEXT NOT NULL,
+            asset_type  TEXT NOT NULL,      -- entity / metric
+            asset_key   TEXT NOT NULL,      -- entities.name / metrics.name
+            created_at  TEXT,
+            PRIMARY KEY (topic_name, asset_type, asset_key)
+        )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_topic_assets_topic ON topic_assets(topic_name)")
+
+    # ③ column_comments.dimension_type
+    try:
+        cols = [r[1] for r in cur.execute("PRAGMA table_info(column_comments)").fetchall()]
+        if "dimension_type" not in cols:
+            cur.execute("ALTER TABLE column_comments ADD COLUMN dimension_type TEXT")
+    except Exception:
+        pass
+
+    # ④ metrics.expression + expression_status
+    try:
+        cols = [r[1] for r in cur.execute("PRAGMA table_info(metrics)").fetchall()]
+        if "expression" not in cols:
+            cur.execute("ALTER TABLE metrics ADD COLUMN expression TEXT")
+        if "expression_status" not in cols:
+            cur.execute("ALTER TABLE metrics ADD COLUMN expression_status TEXT")
+    except Exception:
+        pass
+
+    # ⑤ 业务域体系（业务域上层分类 + 业务主题 + 关联 scope）
+    _migrate_business_domain(cur)
+
+    # ⑥ OSSIE 标准字段补齐（Dataset.primary_key、Relationship.from/to_columns）
+    _migrate_ossie_std_fields(cur)
+
+
+def _migrate_ossie_std_fields(cur):
+    """补齐 OSSIE 标准字段（幂等，只增不改）。
+
+    ① entities.primary_key：Dataset 主键（JSON 数组，如 ["order_id"]）
+    ② relationships.from_columns / to_columns：Relationship 显式字段名（JSON 数组）
+       —— 替代从 join_sql 正则提取的不确定性。
+    """
+    try:
+        cols = [r[1] for r in cur.execute("PRAGMA table_info(entities)").fetchall()]
+        if "primary_key" not in cols:
+            cur.execute("ALTER TABLE entities ADD COLUMN primary_key TEXT")
+    except Exception:
+        pass
+    try:
+        cols = [r[1] for r in cur.execute("PRAGMA table_info(relationships)").fetchall()]
+        if "from_columns" not in cols:
+            cur.execute("ALTER TABLE relationships ADD COLUMN from_columns TEXT")
+        if "to_columns" not in cols:
+            cur.execute("ALTER TABLE relationships ADD COLUMN to_columns TEXT")
+    except Exception:
+        pass
+
+
+def _migrate_business_domain(cur):
+    """业务域体系迁移（幂等，只增不改）。
+
+    ① data_domains 加 department（所属部门）—— 复用为业务域（domain_type='business_domain'）
+    ② business_subjects：业务域下的业务主题（新表）
+    ③ topic_assets 加 scope：区分「域→资产」/「主题→资产」两层关联
+    """
+    # ① department
+    try:
+        cols = [r[1] for r in cur.execute("PRAGMA table_info(data_domains)").fetchall()]
+        if "department" not in cols:
+            cur.execute("ALTER TABLE data_domains ADD COLUMN department TEXT")
+    except Exception:
+        pass
+    # ② business_subjects
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS business_subjects (
+            name         TEXT PRIMARY KEY,
+            domain_name  TEXT NOT NULL,
+            display_name TEXT,
+            description  TEXT,
+            enabled      INTEGER DEFAULT 1,
+            created_at   TEXT,
+            updated_at   TEXT
+        )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_bs_domain ON business_subjects(domain_name)")
+    # ③ topic_assets.scope
+    try:
+        cols = [r[1] for r in cur.execute("PRAGMA table_info(topic_assets)").fetchall()]
+        if "scope" not in cols:
+            cur.execute("ALTER TABLE topic_assets ADD COLUMN scope TEXT DEFAULT 'subject'")
+    except Exception:
+        pass
+
+
+# ═══════════════════════════════════════════════════════════
+# 语义模型容器 + OSSIE 导入导出日志（知识中心整合 + Apache Ossie 标准兼容）
+# ═══════════════════════════════════════════════════════════
+# ★ 定位：语义模型是「一个业务主题 = 一个模型」的容器，承载 datasets/metrics/
+#   relationships 的内部 JSON 快照。它【不是】新的一套知识存储，而是把现有
+#   7 张知识表的对象按业务主题组织成可导入导出的单元。
+# ★ 事实源边界：模型内对象（dataset/metric/relationship）的正文仍在原知识表，
+#   semantic_models.model_json 只是「导出/导入快照 + 模型级元数据」，避免双事实源。
+# ★ 审核状态复用现有治理枚举（draft/candidate/approved/rejected/deprecated），
+#   不另建一套状态体系（任务书 §4.4）。
+
+def _migrate_semantic_models(cur):
+    """建语义模型相关表（幂等，只 CREATE TABLE IF NOT EXISTS，不删不改旧表）。"""
+    # ① 语义模型容器
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS semantic_models (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            name          TEXT NOT NULL UNIQUE,      -- 模型名（业务主题名，唯一）
+            description   TEXT,                      -- 人类可读描述
+            status        TEXT DEFAULT 'draft',      -- draft/candidate/approved/rejected/deprecated
+            source        TEXT DEFAULT 'manual',     -- manual/ossie_import/ai
+            version       INTEGER DEFAULT 1,         -- 版本号（每次 upsert +1）
+            model_json    TEXT,                      -- 完整内部模型 JSON（datasets/metrics/relationships + 扩展）
+            source_system TEXT,                      -- 来源系统（OSSIE 导入时记录 schema_version）
+            created_at    TEXT,
+            updated_at    TEXT,
+            updated_by    TEXT,
+            approved_at   TEXT,
+            approved_by   TEXT
+        )
+    """)
+    # ② 模型版本记录（append-only，每次保存留快照）
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS semantic_model_versions (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            model_id   INTEGER NOT NULL,
+            version    INTEGER NOT NULL,
+            model_json TEXT,                         -- 该版本的完整模型 JSON
+            note       TEXT,                         -- 变更说明
+            operator   TEXT,
+            created_at TEXT
+        )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_smv_model "
+                "ON semantic_model_versions(model_id, version)")
+    # ③ OSSIE 导入日志
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS ossie_import_log (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            model_name     TEXT,                     -- 目标模型名
+            schema_version TEXT,                     -- 导入文件的 version 字段
+            format         TEXT,                     -- yaml/json
+            result         TEXT,                     -- success/failed/cancelled
+            counts         TEXT,                     -- 对象数量 JSON
+            conflicts      TEXT,                     -- 冲突 JSON
+            report         TEXT,                     -- 兼容性/预览报告 JSON
+            operator       TEXT,
+            created_at     TEXT
+        )
+    """)
+    # ④ OSSIE 导出日志
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS ossie_export_log (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            model_name     TEXT,
+            schema_version TEXT,
+            format         TEXT,                     -- yaml/json
+            result         TEXT,                     -- success/failed
+            report         TEXT,                     -- 兼容性报告 JSON
+            operator       TEXT,
+            created_at     TEXT
+        )
+    """)
+
+
+def _model_row_to_dict(row):
+    """把语义模型行转成 dict（model_json 反序列化，附带统计）。"""
+    d = {
+        "id": row["id"],
+        "name": row["name"],
+        "description": row["description"] or "",
+        "status": row["status"] or "draft",
+        "source": row["source"] or "manual",
+        "version": row["version"] or 1,
+        "source_system": row["source_system"] or "",
+        "created_at": row["created_at"] or "",
+        "updated_at": row["updated_at"] or "",
+        "updated_by": row["updated_by"] or "",
+        "approved_at": row["approved_at"] or "",
+        "approved_by": row["approved_by"] or "",
+    }
+    model = _from_json_str(row["model_json"]) or {}
+    d["datasets"] = model.get("datasets") or []
+    d["metrics"] = model.get("metrics") or []
+    d["relationships"] = model.get("relationships") or []
+    d["model_extensions"] = model.get("model_extensions") or {}
+    # 便捷统计（前端列表直接展示，避免二次计算）
+    d["counts"] = {
+        "datasets": len(d["datasets"]),
+        "metrics": len(d["metrics"]),
+        "relationships": len(d["relationships"]),
+    }
+    return d
+
+
+def list_semantic_models(status=None):
+    """列出语义模型（可选按状态过滤）。返回 dict 列表（含统计，不含 model_json 明细字段名）。"""
+    _ensure_ready()
+    conn = _connect()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    if status:
+        rows = cur.execute(
+            "SELECT * FROM semantic_models WHERE status = ? ORDER BY updated_at DESC", (status,)
+        ).fetchall()
+    else:
+        rows = cur.execute("SELECT * FROM semantic_models ORDER BY updated_at DESC").fetchall()
+    conn.close()
+    return [_model_row_to_dict(r) for r in rows]
+
+
+def get_semantic_model(model_id):
+    """按 id 取语义模型详情（含完整模型 JSON）。不存在返回 None。"""
+    _ensure_ready()
+    conn = _connect()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    row = cur.execute("SELECT * FROM semantic_models WHERE id = ?", (model_id,)).fetchone()
+    conn.close()
+    return _model_row_to_dict(row) if row else None
+
+
+def get_semantic_model_by_name(name):
+    """按模型名取语义模型详情。不存在返回 None。"""
+    _ensure_ready()
+    conn = _connect()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    row = cur.execute("SELECT * FROM semantic_models WHERE name = ?", (name,)).fetchone()
+    conn.close()
+    return _model_row_to_dict(row) if row else None
+
+
+def upsert_semantic_model(model, operator=None, note=""):
+    """创建或更新语义模型。
+
+    参数 model 需包含：name + 可选 description/datasets/metrics/relationships/model_extensions/status/source。
+    ★ 每次保存：version +1，并写一条 semantic_model_versions 快照（可追溯）。
+    ★ 首次创建默认 status='draft'（AI/导入产出的模型需走审核，不直接 approved）。
+    """
+    if not isinstance(model, dict) or not (model.get("name") or "").strip():
+        raise ValueError("模型名不能为空")
+    _ensure_ready()
+    name = model["name"].strip()
+    conn = _connect()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    payload = {
+        "name": name,
+        "description": model.get("description") or "",
+        "datasets": model.get("datasets") or [],
+        "metrics": model.get("metrics") or [],
+        "relationships": model.get("relationships") or [],
+        "model_extensions": model.get("model_extensions") or {},
+    }
+
+    row = cur.execute("SELECT * FROM semantic_models WHERE name = ?", (name,)).fetchone()
+    now = _now()
+    if row:
+        new_version = (row["version"] or 1) + 1
+        cur.execute("""
+            UPDATE semantic_models SET
+                description = ?, model_json = ?, version = ?,
+                status = COALESCE(?, status), source = ?,
+                source_system = ?, updated_at = ?, updated_by = ?
+            WHERE id = ?
+        """, (payload["description"], _to_json_str(payload), new_version,
+              model.get("status"), model.get("source") or "manual",
+              model.get("source_system") or row["source_system"], now, operator, row["id"]))
+        model_id = row["id"]
+    else:
+        new_version = 1
+        cur.execute("""
+            INSERT INTO semantic_models
+                (name, description, status, source, version, model_json, source_system,
+                 created_at, updated_at, updated_by)
+            VALUES (?,?,?,?,?,?,?,?,?,?)
+        """, (name, payload["description"],
+              model.get("status") or "draft", model.get("source") or "manual",
+              new_version, _to_json_str(payload), model.get("source_system"),
+              now, now, operator))
+        model_id = cur.lastrowid
+
+    # 写版本快照
+    cur.execute("""
+        INSERT INTO semantic_model_versions (model_id, version, model_json, note, operator, created_at)
+        VALUES (?,?,?,?,?,?)
+    """, (model_id, new_version, _to_json_str(payload), note, operator, now))
+    conn.commit()
+    conn.close()
+    return get_semantic_model(model_id)
+
+
+def delete_semantic_model(model_id, operator=None):
+    """删除语义模型（含版本记录）。返回是否删除成功。"""
+    _ensure_ready()
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM semantic_model_versions WHERE model_id = ?", (model_id,))
+    cur.execute("DELETE FROM semantic_models WHERE id = ?", (model_id,))
+    deleted = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return deleted
+
+
+def set_semantic_model_status(model_id, status, operator=None):
+    """流转语义模型审核状态（复用治理枚举：draft/candidate/approved/rejected/deprecated）。
+
+    ★ approved 时写 approved_at/approved_by；其余状态清空核准信息。
+    """
+    _ensure_ready()
+    conn = _connect()
+    cur = conn.cursor()
+    now = _now()
+    if status == "approved":
+        cur.execute("UPDATE semantic_models SET status = ?, approved_at = ?, approved_by = ?, updated_at = ? WHERE id = ?",
+                    (status, now, operator, now, model_id))
+    else:
+        cur.execute("UPDATE semantic_models SET status = ?, approved_at = NULL, approved_by = NULL, updated_at = ? WHERE id = ?",
+                    (status, now, model_id))
+    ok = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return ok
+
+
+def list_semantic_model_versions(model_id):
+    """列某模型的版本记录（新→旧）。"""
+    _ensure_ready()
+    conn = _connect()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    rows = cur.execute(
+        "SELECT id, version, note, operator, created_at FROM semantic_model_versions "
+        "WHERE model_id = ? ORDER BY version DESC", (model_id,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def log_ossie_import(model_name, schema_version, fmt, result, counts=None,
+                     conflicts=None, report=None, operator=None):
+    """记一条 OSSIE 导入日志。"""
+    _ensure_ready()
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO ossie_import_log
+            (model_name, schema_version, format, result, counts, conflicts, report, operator, created_at)
+        VALUES (?,?,?,?,?,?,?,?,?)
+    """, (model_name, schema_version, fmt, result,
+          _to_json_str(counts) if counts is not None else None,
+          _to_json_str(conflicts) if conflicts is not None else None,
+          _to_json_str(report) if report is not None else None,
+          operator, _now()))
+    conn.commit()
+    conn.close()
+
+
+def log_ossie_export(model_name, schema_version, fmt, result, report=None, operator=None):
+    """记一条 OSSIE 导出日志。"""
+    _ensure_ready()
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO ossie_export_log
+            (model_name, schema_version, format, result, report, operator, created_at)
+        VALUES (?,?,?,?,?,?,?)
+    """, (model_name, schema_version, fmt, result,
+          _to_json_str(report) if report is not None else None,
+          operator, _now()))
+    conn.commit()
+    conn.close()
+
+
+def list_ossie_import_logs(limit=50):
+    """列最近 OSSIE 导入日志。"""
+    _ensure_ready()
+    conn = _connect()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    rows = cur.execute(
+        "SELECT * FROM ossie_import_log ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["counts"] = _from_json_str(d.get("counts"))
+        d["conflicts"] = _from_json_str(d.get("conflicts"))
+        d["report"] = _from_json_str(d.get("report"))
+        out.append(d)
+    return out
+
+
+def list_ossie_export_logs(limit=50):
+    """列最近 OSSIE 导出日志。"""
+    _ensure_ready()
+    conn = _connect()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    rows = cur.execute(
+        "SELECT * FROM ossie_export_log ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["report"] = _from_json_str(d.get("report"))
+        out.append(d)
+    return out
+
+
+# ═══════════════════════════════════════════════════════════
+# 业务域 + 业务主题 + 资产关联（业务域与标准化业务语义模型）
+# ═══════════════════════════════════════════════════════════
+# ★ 三层：业务域（data_domains.domain_type='business_domain'）→ 业务主题
+#   （business_subjects）→ Semantic Model（动态映射 + 发布快照）。
+#   知识资产通过 topic_assets（含 scope）多对多关联业务域/主题，不强制转 OSSIE。
+
+ASSET_TYPES = ("entity", "metric", "relationship", "golden_sql", "doc", "rule", "feedback")
+
+
+def list_business_domains():
+    """列出业务域（domain_type='business_domain' 的 data_domains 记录）。"""
+    _ensure_ready()
+    conn = _connect()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    rows = cur.execute(
+        "SELECT name, display_name, description, owner, department, enabled, created_at, updated_at "
+        "FROM data_domains WHERE domain_type = 'business_domain' ORDER BY name").fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["subjects"] = [s["name"] for s in list_business_subjects(d["name"])]
+        out.append(d)
+    return out
+
+
+def get_business_domain(name):
+    """取单个业务域（含主题列表）。不存在返回 None。"""
+    _ensure_ready()
+    conn = _connect()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    row = cur.execute(
+        "SELECT name, display_name, description, owner, department, enabled, created_at, updated_at "
+        "FROM data_domains WHERE name = ? AND domain_type = 'business_domain'", (name,)).fetchone()
+    conn.close()
+    if not row:
+        return None
+    d = dict(row)
+    d["subjects"] = list_business_subjects(name)
+    return d
+
+
+def upsert_business_domain(name, display_name="", description="", owner="", department="", enabled=1):
+    """创建/更新业务域（写入 data_domains，domain_type='business_domain'）。"""
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("业务域标识不能为空")
+    _ensure_ready()
+    conn = _connect()
+    cur = conn.cursor()
+    now = _now()
+    cur.execute("""
+        INSERT INTO data_domains
+            (name, display_name, description, owner, department, enabled, domain_type, created_at, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(name) DO UPDATE SET
+            display_name = excluded.display_name,
+            description  = excluded.description,
+            owner        = excluded.owner,
+            department   = excluded.department,
+            enabled      = excluded.enabled,
+            domain_type  = excluded.domain_type,
+            updated_at   = excluded.updated_at
+    """, (name, display_name or name, description, owner, department,
+          1 if enabled else 0, "business_domain", now, now))
+    conn.commit()
+    conn.close()
+    return {"ok": True, "name": name}
+
+
+def delete_business_domain(name):
+    """删除业务域（连带删除其业务主题 + 资产引用）。"""
+    _ensure_ready()
+    conn = _connect()
+    cur = conn.cursor()
+    # 删主题
+    cur.execute("DELETE FROM business_subjects WHERE domain_name = ?", (name,))
+    # 删资产引用（域 + 主题两层）
+    subject_names = [r[0] for r in cur.execute(
+        "SELECT name FROM business_subjects WHERE domain_name = ?", (name,)).fetchall()]
+    for sn in subject_names:
+        cur.execute("DELETE FROM topic_assets WHERE topic_name = ?", (sn,))
+    cur.execute("DELETE FROM topic_assets WHERE topic_name = ?", (name,))
+    # 删域本身
+    cur.execute("DELETE FROM data_domains WHERE name = ? AND domain_type = 'business_domain'", (name,))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+def list_business_subjects(domain_name=None):
+    """列业务主题（可按业务域过滤）。"""
+    _ensure_ready()
+    conn = _connect()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    if domain_name:
+        rows = cur.execute(
+            "SELECT name, domain_name, display_name, description, enabled, created_at, updated_at "
+            "FROM business_subjects WHERE domain_name = ? ORDER BY name", (domain_name,)).fetchall()
+    else:
+        rows = cur.execute(
+            "SELECT name, domain_name, display_name, description, enabled, created_at, updated_at "
+            "FROM business_subjects ORDER BY domain_name, name").fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["assets"] = list_scope_assets(d["name"], scope="subject")
+        out.append(d)
+    return out
+
+
+def upsert_business_subject(name, domain_name, display_name="", description="", enabled=1):
+    """创建/更新业务主题（挂在业务域下）。"""
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("业务主题标识不能为空")
+    if not domain_name:
+        raise ValueError("业务主题必须归属一个业务域")
+    _ensure_ready()
+    conn = _connect()
+    cur = conn.cursor()
+    now = _now()
+    cur.execute("""
+        INSERT INTO business_subjects
+            (name, domain_name, display_name, description, enabled, created_at, updated_at)
+        VALUES (?,?,?,?,?,?,?)
+        ON CONFLICT(name) DO UPDATE SET
+            domain_name  = excluded.domain_name,
+            display_name = excluded.display_name,
+            description  = excluded.description,
+            enabled      = excluded.enabled,
+            updated_at   = excluded.updated_at
+    """, (name, domain_name, display_name or name, description, 1 if enabled else 0, now, now))
+    conn.commit()
+    conn.close()
+    return {"ok": True, "name": name}
+
+
+def delete_business_subject(name):
+    """删除业务主题（连带其资产引用）。"""
+    _ensure_ready()
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM topic_assets WHERE topic_name = ? AND scope = 'subject'", (name,))
+    cur.execute("DELETE FROM business_subjects WHERE name = ?", (name,))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+def list_scope_assets(scope_key, scope="domain"):
+    """列某业务域/主题的资产引用 [{asset_type, asset_key}]。"""
+    _ensure_ready()
+    conn = _connect()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    rows = cur.execute(
+        "SELECT asset_type, asset_key FROM topic_assets WHERE topic_name = ? AND scope = ? "
+        "ORDER BY asset_type, asset_key", (scope_key, scope)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def add_scope_asset(scope_key, asset_type, asset_key, scope="domain"):
+    """给业务域/主题添加资产引用（幂等，主键去重）。"""
+    if asset_type not in ASSET_TYPES:
+        raise ValueError(f"asset_type 必须是 {'/'.join(ASSET_TYPES)}")
+    _ensure_ready()
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT OR IGNORE INTO topic_assets (topic_name, asset_type, asset_key, scope, created_at)
+        VALUES (?,?,?,?,?)
+    """, (scope_key, asset_type, asset_key, scope, _now()))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+def remove_scope_asset(scope_key, asset_type, asset_key, scope="domain"):
+    """移除业务域/主题资产引用。"""
+    _ensure_ready()
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM topic_assets WHERE topic_name = ? AND asset_type = ? AND asset_key = ? AND scope = ?",
+                (scope_key, asset_type, asset_key, scope))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+def get_subjects_by_assets(asset_keys):
+    """按资产标识（实体名/指标名）反向查其归属的业务主题。
+
+    返回 {asset_key: [subject_name, ...]}（一个资产可跨多个主题/域）。
+    ★ 供 Agent 业务域识别用：从命中的实体/指标 → 反查主题 → 主题 → 域。
+    """
+    out = {}
+    if not asset_keys:
+        return out
+    _ensure_ready()
+    conn = _connect()
+    cur = conn.cursor()
+    q = ",".join("?" for _ in asset_keys)
+    rows = cur.execute(
+        f"SELECT topic_name, asset_key FROM topic_assets "
+        f"WHERE scope='subject' AND asset_key IN ({q})", list(asset_keys)).fetchall()
+    conn.close()
+    for topic_name, asset_key in rows:
+        out.setdefault(asset_key, []).append(topic_name)
+    return out
+
+
+def get_subject_domain_map(subject_names):
+    """主题名 → 域编码 映射。"""
+    out = {}
+    if not subject_names:
+        return out
+    _ensure_ready()
+    conn = _connect()
+    cur = conn.cursor()
+    q = ",".join("?" for _ in subject_names)
+    rows = cur.execute(
+        f"SELECT name, domain_name FROM business_subjects WHERE name IN ({q})",
+        list(subject_names)).fetchall()
+    conn.close()
+    return {name: domain for name, domain in rows}
+
+
+# ═══════════════════════════════════════════════════════════
+# 字段维度属性（OSSIE 融合式 · Field + Dimension）
+# ═══════════════════════════════════════════════════════════
+def get_column_dimension_types(table_name=None):
+    """读字段维度类型 {表.字段: dimension_type}（未指定为全部）。"""
+    _ensure_ready()
+    conn = _connect()
+    cur = conn.cursor()
+    if table_name:
+        cur.execute("SELECT table_name, column_name, dimension_type FROM column_comments "
+                    "WHERE table_name = ? AND dimension_type IS NOT NULL AND dimension_type != ''",
+                    (table_name,))
+    else:
+        cur.execute("SELECT table_name, column_name, dimension_type FROM column_comments "
+                    "WHERE dimension_type IS NOT NULL AND dimension_type != ''")
+    rows = cur.fetchall()
+    conn.close()
+    return {f"{t}.{c}": d for t, c, d in rows}
+
+
+def set_column_dimension_type(table_name, column_name, dimension_type):
+    """设置字段维度类型（空串 = 清除，回到自动识别）。"""
+    _ensure_ready()
+    conn = _connect()
+    cur = conn.cursor()
+    val = (dimension_type or "").strip() or None
+    # 字段注释行可能不存在（只有维度、没注释）—— 用 upsert 语义，无行则插入
+    cur.execute("""
+        INSERT INTO column_comments (table_name, column_name, comment, source, dimension_type, created_at)
+        VALUES (?, ?, '', 'manual', ?, ?)
+        ON CONFLICT(table_name, column_name) DO UPDATE SET dimension_type = excluded.dimension_type
+    """, (table_name, column_name, val, _now()))
+    conn.commit()
+    conn.close()
+    return {"ok": True}

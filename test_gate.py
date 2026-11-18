@@ -134,49 +134,33 @@ def test_validator_gate_blocks_execution():
 
 
 # ═══════════════════════════════════════════════════════════
-# ② P0-3：不可恢复异常 → fail-closed（不回退 legacy）
+# ② P0-3：统一主流程 fail-closed（双流水线已收敛，任何异常都不降级）
 # ═══════════════════════════════════════════════════════════
-def test_fail_closed_on_unrecoverable():
-    print("\n【P0-3】V2 抛不可恢复异常 → fail-closed，不得回退 legacy")
-    orig_v2, orig_legacy = agent.ask_v2, agent.ask_legacy
-    calls = {"legacy": 0}
+def test_fail_closed_always():
+    print("\n【P0-3】统一主流程任何异常（含可恢复故障）→ fail-closed，不降级、不执行")
 
-    def boom(index, q):
-        raise ValueError("语义层逻辑错误（不可恢复）")
+    def _run_boom(exc):
+        orig_v2 = agent.ask_v2
 
-    agent.ask_v2 = boom
-    agent.ask_legacy = lambda index, q: (calls.__setitem__("legacy", calls["legacy"] + 1), {"ok": True})[1]
-    try:
-        r = agent.ask({}, "q")
-    finally:
-        agent.ask_v2, agent.ask_legacy = orig_v2, orig_legacy
-    check("② 未回退 legacy（legacy 调用次数）", calls["legacy"], 0)
-    check("② 返回 ok=False", r.get("ok"), False)
-    check("② degraded=False", r.get("degraded"), False)
-    check("② 记录了降级原因", bool(r.get("degrade_reason")), True)
+        def boom(index, q, user=None, understanding_override=None, modify_context=None):
+            # ★ 签名必须与 agent.ask 实际调用一致（ask 会传 modify_context）。
+            raise exc
+        agent.ask_v2 = boom
+        try:
+            return agent.ask({}, "q")
+        finally:
+            agent.ask_v2 = orig_v2
 
+    r = _run_boom(ValueError("语义层逻辑错误（不可恢复）"))
+    check("② 业务异常 → ok=False", r.get("ok"), False)
+    check("② 业务异常 → pipeline=v2（唯一主流程）", r.get("pipeline"), "v2")
+    check("② 业务异常 → degraded=False（无降级语义）", r.get("degraded"), False)
+    check("② 业务异常 → 记录异常原因", bool(r.get("degrade_reason")), True)
 
-# ═══════════════════════════════════════════════════════════
-# ③ P0-3：白名单内可恢复故障 → 允许回退 + 留痕
-# ═══════════════════════════════════════════════════════════
-def test_recoverable_falls_back():
-    print("\n【P0-3】V2 抛白名单内可恢复故障（超时）→ 允许回退，且结果留痕")
-    orig_v2, orig_legacy = agent.ask_v2, agent.ask_legacy
-    calls = {"legacy": 0}
-
-    def boom(index, q):
-        raise TimeoutError("connection timed out")
-
-    agent.ask_v2 = boom
-    agent.ask_legacy = lambda index, q: (calls.__setitem__("legacy", calls["legacy"] + 1), {"ok": True})[1]
-    try:
-        r = agent.ask({}, "q")
-    finally:
-        agent.ask_v2, agent.ask_legacy = orig_v2, orig_legacy
-    check("③ 回退 legacy 一次", calls["legacy"], 1)
-    check("③ pipeline=legacy", r.get("pipeline"), "legacy")
-    check("③ degraded=True", r.get("degraded"), True)
-    check("③ 记录降级原因", bool(r.get("degrade_reason")), True)
+    r2 = _run_boom(TimeoutError("connection timed out"))
+    check("② 可恢复故障（超时）→ 同样 fail-closed，不再回退", r2.get("ok"), False)
+    check("② 超时 → pipeline=v2（无 legacy）", r2.get("pipeline"), "v2")
+    check("② 超时 → degraded=False", r2.get("degraded"), False)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -279,6 +263,85 @@ def test_single_execution_chokepoint():
     fn_src = ast.get_source_segment(src, fn) if fn else ""
     check_true("_exec_sql 会先过拒答判定", "_refusal_reason(sql)" in fn_src,
                fn_src[-200:])
+
+
+# ═══════════════════════════════════════════════════════════
+# ⑥.2 ★ 静态契约（全仓版）：除白名单外，任何运行时代码都不得裸调 db.execute_sql
+#    背景：6.1 只守住了 agent.py，结果 gaps.py 里留了两条直连（2026-10-29 架构梳理发现）。
+#    教训：只守一个文件的契约，等于没守 —— 新模块天然不受约束。
+# ═══════════════════════════════════════════════════════════
+_EXEC_ALLOWED_FILES = {
+    "agent.py",          # 唯一出口 _exec_sql 所在
+    "db.py",             # 数据访问门面本身
+    "db_clickhouse.py",  # 驱动实现
+    "db_sqlite.py",      # 驱动实现
+    "check1.py",         # 一次性手工排查脚本（不进服务）
+    "ck_check.py",       # 运维只读体检脚本
+    "main.py",           # CLI
+}
+
+
+def test_no_bare_exec_anywhere():
+    print("\n【静态契约·全仓】除白名单文件外，不得出现裸 db.execute_sql")
+    here = os.path.dirname(os.path.abspath(__file__))
+    bad = []
+    for fn in sorted(os.listdir(here)):
+        if not fn.endswith(".py"):
+            continue
+        if fn in _EXEC_ALLOWED_FILES or fn.startswith("test_"):
+            continue
+        try:
+            src = open(os.path.join(here, fn), encoding="utf-8").read()
+            tree = ast.parse(src)
+        except Exception:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            f = getattr(node, "func", None)
+            if (isinstance(f, ast.Attribute) and f.attr == "execute_sql"
+                    and isinstance(f.value, ast.Name) and f.value.id == "db"):
+                bad.append(f"{fn}:{node.lineno}")
+    if bad:
+        print(f"       违规位置：{bad}")
+    check("白名单外的裸 db.execute_sql 调用数", len(bad), 0)
+
+
+# ═══════════════════════════════════════════════════════════
+# ⑥.3 ★ gaps._system_query 的行为验证（不连库，只测拒绝路径）
+#    光有"收口了"不够，还要证明这个出口真的会拒 —— 否则它只是换了个名字的转发。
+# ═══════════════════════════════════════════════════════════
+def test_gaps_system_query_rejects():
+    print("\n【缺口扫描】_system_query 必须拒绝 非只读 SQL / 不存在的表")
+    import gaps
+
+    def _raises(fn, *a):
+        try:
+            fn(*a)
+            return False, ""
+        except Exception as e:
+            return True, str(e)
+
+    ok1, msg1 = _raises(gaps._system_query, "DROP TABLE dwd_order_all", "dwd_order_all")
+    check_true("① 非 SELECT 被拒", ok1, msg1)
+
+    # 显式打桩成"已知真实表集合"，验证真正的拦截逻辑（否则要连 ClickHouse 才有表清单）
+    # 同时把 agent._exec_sql 打桩掉：本用例只验证"校验"，不该真的连库
+    orig = gaps._system_tables
+    orig_exec = agent._exec_sql
+    gaps._system_tables = lambda: {"dwd_order_all", "ods_valet_order_all"}
+    agent._exec_sql = lambda sql: ([], [])
+    try:
+        ok2, msg2 = _raises(gaps._system_query,
+                            "SELECT count(*) FROM cx_crm.evil_table", "evil_table")
+        ok3, msg3 = _raises(gaps._system_query,
+                            "SELECT count(*) FROM cx_crm.dwd_order_all", "dwd_order_all")
+    finally:
+        gaps._system_tables = orig
+        agent._exec_sql = orig_exec
+    check_true("② 不在真实表清单里的表被拒", ok2, msg2)
+    # ③ 正例：合规 SQL + 合规表 → 通过校验（打桩后不抛错）
+    check_true("③ 合规 SQL 不被校验误拦", not ok3, msg3)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -476,44 +539,6 @@ def test_validator_status_and_comment():
         _Ctx(), {"bindings": {}}, allowed)
     check("⑩ 裸中文别名仍被拦截",
           any(i["rule"] == "alias_backtick" for i in r["issues"]), True)
-
-
-# ═══════════════════════════════════════════════════════════
-# ⑪ S2：生产环境禁止 always 降级
-# ═══════════════════════════════════════════════════════════
-def test_production_blocks_always_fallback():
-    print("\n【S2-A】生产环境 LEGACY_FALLBACK_MODE=always 不得回退弱校验路径")
-    orig_v2, orig_legacy = agent.ask_v2, agent.ask_legacy
-    orig_mode = getattr(config, "LEGACY_FALLBACK_MODE", None)
-    orig_env = getattr(config, "APP_ENV", None)
-    calls = {"legacy": 0}
-
-    def boom(index, q):
-        raise ValueError("业务逻辑错误（不可恢复）")
-
-    def fake_legacy(index, q):
-        calls["legacy"] += 1
-        return {"ok": True, "pipeline": "legacy"}
-
-    agent.ask_v2, agent.ask_legacy = boom, fake_legacy
-    try:
-        config.APP_ENV = "production"
-        config.LEGACY_FALLBACK_MODE = "always"
-        r = agent.ask({}, "q")
-        check("⑪ 生产 + always + 业务异常 → 不回退 legacy", calls["legacy"], 0)
-        check("⑪ 返回 ok=False", r.get("ok"), False)
-
-        # 对照组：开发环境保留 always 的便利（避免误伤本地调试）
-        config.APP_ENV = "dev"
-        r2 = agent.ask({}, "q")
-        check("⑪ 开发 + always → 允许回退（对照）", calls["legacy"], 1)
-        check("⑪ 开发回退带 degrade_kind=forced", r2.get("degrade_kind"), "forced")
-    finally:
-        agent.ask_v2, agent.ask_legacy = orig_v2, orig_legacy
-        if orig_mode is not None:
-            config.LEGACY_FALLBACK_MODE = orig_mode
-        if orig_env is not None:
-            config.APP_ENV = orig_env
 
 
 # ═══════════════════════════════════════════════════════════
@@ -784,17 +809,17 @@ if __name__ == "__main__":
     print("╚" + "═" * 60 + "╝")
 
     test_validator_gate_blocks_execution()
-    test_fail_closed_on_unrecoverable()
-    test_recoverable_falls_back()
+    test_fail_closed_always()
     test_metric_hard_constraints()
     test_refusal_recognition()
     test_refusal_blocks_execution()
     test_single_execution_chokepoint()
+    test_no_bare_exec_anywhere()
+    test_gaps_system_query_rejects()
     test_gate_checklist()
     test_repair_must_revalidate()
     test_table_parse_fail_closed()
     test_validator_status_and_comment()
-    test_production_blocks_always_fallback()
     test_status_hides_tables_for_non_admin()
     test_sql_guard_dangerous_clauses()
     test_acl_default_by_env()

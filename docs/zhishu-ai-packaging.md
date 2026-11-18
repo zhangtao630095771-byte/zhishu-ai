@@ -22,7 +22,9 @@
 
 1. **单仓库、单进程、前后端一体**
    - 后端 `server.py`（FastAPI）既是 API 服务，也通过 `FileResponse` 直接把 `frontend/index.html` 返回给浏览器。
-   - 前端是**纯原生 HTML/JS 单文件**，**没有 Vite/Webpack、没有构建步骤**。
+   - 前端是**纯原生 HTML/JS**，**没有 Vite/Webpack、没有构建步骤**。
+     （2026-10-29 前是单个 7118 行 HTML；现已拆为 `index.html` 骨架 + `static/{css,js}`，
+     由 `server.py` 的 `/static` 挂载提供 —— 仍然零构建，仍是同一进程。）
    - 不存在独立前端服务器、不存在微服务拆分。
 
 2. **核心逻辑与数据源解耦**
@@ -38,7 +40,7 @@
 ## 三、系统架构（请求链路）
 
 ```
-浏览器 (frontend/index.html，纯静态单文件)
+浏览器 (frontend/index.html + static/css+js，纯静态、零构建)
    │  HTTP / SSE（流式）
    ▼
 server.py  ── FastAPI：路由 / 鉴权中间件 / 参数校验 / 直接提供静态页
@@ -78,7 +80,8 @@ server.py  ── FastAPI：路由 / 鉴权中间件 / 参数校验 / 直接提�
 | `exporter.py` / `ai_ingest.py` / `suggest.py` | 知识导出 / AI 录入 / AI 自动起草注释 |
 | `evaluate.py` / `evaluation/` | 评测集与评测运行 |
 | `ssh_tunnel.py` / `tunnel.sh` | ClickHouse SSH 隧道（仅开发机用） |
-| `frontend/index.html` | 前端单文件页面（零构建，直接由 server 提供） |
+| `frontend/index.html` | 前端骨架页（零构建，直接由 server 提供，约 1330 行） |
+| `frontend/static/` | 前端静态资源：`app.css` / `experience.css` + `js/*.js`（12 个业务域模块），由 `/static` 挂载提供 |
 | `deploy.md` | 详细上线部署指南（本文件的实操补充） |
 | `Dockerfile` / `.dockerignore` | 生产镜像构建 |
 | `requirements.txt` / `.env.example` | 依赖清单 / 环境变量模板 |

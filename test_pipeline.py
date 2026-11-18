@@ -174,18 +174,6 @@ def test_v2_injects_dict_into_prompt():
 
 
 # ═══════════════════════════════════════════════════════════
-# 检查点 3：legacy 组装函数也要能注入字典（两条流水线行为一致）
-# ═══════════════════════════════════════════════════════════
-def test_legacy_prompt_includes_dict():
-    print("\n【检查点3】legacy 组装函数 build_system_prompt 也要注入字典")
-    d = _big_dict()
-    sp = prompt.build_system_prompt([], [], [], [], [d], [d["name"]],
-                                    "查询9月钻石会员的资金流水统计")
-    check_true("legacy prompt 含字典块", "字段取值字典" in sp, sp[-160:])
-    check_true("legacy prompt 含钻石会员(161)", "161=钻石会员" in sp)
-
-
-# ═══════════════════════════════════════════════════════════
 # 主流程
 # ═══════════════════════════════════════════════════════════
 if __name__ == "__main__":
@@ -197,7 +185,6 @@ if __name__ == "__main__":
     test_dict_block_relevance()
     test_case_when_snippet()
     test_v2_injects_dict_into_prompt()
-    test_legacy_prompt_includes_dict()
 
     print()
     print("=" * 62)

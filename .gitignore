@@ -15,7 +15,12 @@
 *.db.bak-*
 *.db.promptbak-*
 *.bak
+# ★ 带日期/后缀的备份文件（如 index.html.bak-semantic-20261116-092749），*.bak 匹配不到
+*.bak-*
 *.backup
+# ★ 整个前端备份目录（如 frontend.bak-20261117-databuddy），820K 旧源码副本，不入库
+*.bak-*/
+frontend.bak-*/
 
 # Python
 __pycache__/

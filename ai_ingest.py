@@ -142,20 +142,24 @@ def ingest_sql(question, sql, note=""):
 
 def _priority_of(t):
     return {"metric": "P1", "entity": "P2", "relationship": "P2",
-            "column_comment": "P3", "dict": "P3", "doc": "P4"}.get(t, "?")
+            "column_comment": "P3", "dict": "P3", "dimension": "P3", "doc": "P4"}.get(t, "?")
 
 
 def _apply(t, it):
     """按类型落库，返回结果（含 key 与 data，供前端编辑/删除回显）"""
     if t == "metric":
-        config_store.upsert_metric({
+        # ★ source="ai"：AI 录入的指标进 candidate，必须人工复核才进生产检索；
+        #   不传的话会吃建表默认值 approved，等于绕过治理（指标是 P1 层，最不该绕过）。
+        ok, why = config_store.upsert_metric({
             "name": it["name"], "definition": it.get("definition", ""),
             "metric_type": it.get("metric_type") or "other",
             "tables": it.get("tables") or [],
             "keywords": it.get("keywords") or [],
-        })
-        return {"type": t, "priority": "P1", "name": it["name"], "status": "ok",
-                "message": "已录入指标", "key": it["name"], "data": it}
+        }, source="ai")
+        return {"type": t, "priority": "P1", "name": it["name"],
+                "status": "ok" if ok else "skipped",
+                "message": "已录入指标（待复核）" if ok else f"跳过：{why}",
+                "key": it["name"], "data": it}
     if t == "entity":
         # ★ source="ai"：AI 录入的实体【不得覆盖人工登记的实体】
         #   （否则每次投喂/SQL 提炼都可能把人写好的关键词、口径冲掉）
@@ -166,49 +170,74 @@ def _apply(t, it):
         }, source="ai")
         return {"type": t, "priority": "P2", "name": it["name"],
                 "status": "ok" if ok else "skipped",
-                "message": "已录入实体" if ok else f"跳过：{why}",
+                "message": "已录入实体（待复核）" if ok else f"跳过：{why}",
                 "key": it["name"], "data": it}
     if t == "relationship":
-        config_store.upsert_relationship({
+        # ★ source="ai"：AI 推断的 JOIN 规则必须复核（错的 JOIN 会让数据翻倍）
+        ok, why = config_store.upsert_relationship({
             "from_entity": it.get("from_entity", ""), "to_entity": it.get("to_entity", ""),
             "join_sql": it.get("join_sql", ""), "join_type": "LEFT",
             "cardinality": it.get("cardinality", "1:1"),
             "pre_agg_required": bool(it.get("pre_agg_required")),
             "rule_note": it.get("rule_note", ""),
-        })
+        }, source="ai")
         key = f"{it.get('from_entity', '')}|{it.get('to_entity', '')}"
         return {"type": t, "priority": "P2",
                 "name": f"{it.get('from_entity', '')}→{it.get('to_entity', '')}",
-                "status": "ok", "message": "已录入关联规则", "key": key, "data": it}
+                "status": "ok" if ok else "skipped",
+                "message": "已录入关联规则（待复核）" if ok else f"跳过：{why}",
+                "key": key, "data": it}
     if t == "column_comment":
-        config_store.set_column_comment(it["table"], it["column"],
-                                        it.get("comment", ""), source="ai")
+        affected = config_store.set_column_comment(it["table"], it["column"],
+                                                   it.get("comment", ""), source="ai")
         return {"type": t, "priority": "P3", "name": f"{it['table']}.{it['column']}",
-                "status": "ok", "message": "已录入字段注释",
+                "status": "ok" if affected else "skipped",
+                "message": "已录入字段注释（待复核）" if affected else "跳过：已有人工版本，AI 不覆盖",
                 "key": f"{it['table']}.{it['column']}", "data": it}
     if t == "dict":
         name = it.get("name") or f"{it.get('field_hint', '')} 枚举"
-        config_store.upsert_dict_entry({
+        # ★ source="ai"：AI 整理的枚举值必须复核（值映射错 = 口径错）
+        ok, why = config_store.upsert_dict_entry({
             "name": name, "dict_type": "", "field_hint": it.get("field_hint", ""),
             "keywords": it.get("keywords") or [],
             "items": it.get("items") or [],
-        })
+        }, source="ai")
         return {"type": t, "priority": "P3", "name": name,
-                "status": "ok", "message": f"已录入字典（{len(it.get('items') or [])} 条取值）",
+                "status": "ok" if ok else "skipped",
+                "message": (f"已录入字典（{len(it.get('items') or [])} 条取值，待复核）"
+                            if ok else f"跳过：{why}"),
                 "key": name, "data": it}
     if t == "doc":
         title = it.get("title", "")
         # ★ 同名文档按标题覆盖：否则每次投喂同一条知识都会新增一篇重复文档
         exist = next((d for d in config_store.get_kb_docs(enabled_only=False)
                       if d["title"] == title), None)
-        config_store.upsert_kb_doc({
+        ok, why = config_store.upsert_kb_doc({
             "id": exist["id"] if exist else None,
             "title": title, "content": it.get("content", ""),
             "keywords": it.get("keywords") or [], "priority": it.get("priority", 4),
-        })
+        }, source="ai")
         return {"type": t, "priority": "P4", "name": title,
-                "status": "ok", "message": "已录入文档" + ("（覆盖同名）" if exist else ""),
+                "status": "ok" if ok else "skipped",
+                "message": ("已录入文档" + ("（覆盖同名）" if exist else "")) if ok else f"跳过：{why}",
                 "key": title, "data": it}
+    if t == "dimension":
+        # ★ source="ai"：AI 生成的维度进 candidate，须人工复核；不覆盖人工维度
+        import semantic_modeling as _sm
+        dk = it.get("dimension_key") or f"{it.get('source_table', '')}.{it.get('source_column', '')}"
+        ok, why = _sm.upsert_dimension({
+            "dimension_key": dk,
+            "name": it.get("name") or it.get("source_column") or "",
+            "dimension_type": it.get("dimension_type") or "other",
+            "entity_key": it.get("entity_key") or "",
+            "source_table": it.get("source_table") or "",
+            "source_column": it.get("source_column") or "",
+        }, source="ai")
+        return {"type": t, "priority": "P3",
+                "name": it.get("name") or it.get("source_column") or "",
+                "status": "ok" if ok else "skipped",
+                "message": "已录入维度（待复核）" if ok else f"跳过：{why}",
+                "key": dk, "data": it}
     return {"type": t, "priority": "?", "name": "", "status": "error",
             "message": f"未知类型：{t}"}
 
@@ -244,3 +273,67 @@ def delete_item(t, key):
                 return config_store.delete_kb_doc(d["id"])
         return False
     return False
+
+
+# ═══════════════════════════════════════════════════════════
+# ★ 业务场景整链建模（AI 智能建模入口 1：自然语言描述 → 完整语义模型）
+# ═══════════════════════════════════════════════════════════
+def build_scenario_prompt(text):
+    """把一段业务场景描述，解析成一整套语义模型（主题 + 实体 + 关系 + 指标 + 维度）。"""
+    return f"""你是企业数据语义建模助手。用户会描述一个【业务场景 / 业务主题】，请把它解析成一整套结构化语义模型（业务主题 + 实体 + 关系 + 指标 + 维度），供后续人工审核后发布为正式语义资产。
+
+只输出如下 JSON（不要 ``` 包裹、不要多余文字）：
+{{
+  "model_name": "业务主题英文标识（如 order_operation，小写下划线）",
+  "model_display": "业务主题中文名（如 订单经营）",
+  "model_description": "该主题覆盖的分析范围（一句话）",
+  "entities": [
+    {{"name": "业务实体名", "table_name": "物理表名", "grain": "一行=什么", "comment": "说明", "keywords": ["别名"]}}
+  ],
+  "relationships": [
+    {{"from_entity": "左实体", "to_entity": "右实体", "join_sql": "JOIN 片段(含关联键)", "cardinality": "1:1|1:N|N:1|N:M", "pre_agg_required": false, "rule_note": "一对多时需先聚合等说明"}}
+  ],
+  "metrics": [
+    {{"name": "指标名", "definition": "口径（必须写清字段/条件/公式）", "metric_type": "count|ratio|amount|avg|other", "tables": ["依赖表名"]}}
+  ],
+  "dimensions": [
+    {{"name": "维度名", "dimension_key": "英文标识", "dimension_type": "time|geo|status|type|channel|other", "entity_key": "对应实体", "source_table": "物理表", "source_column": "字段名"}}
+  ]
+}}
+
+规则：
+1. 表名用【真实表名】（如 dwd_tu_order_all），判断不了的不要硬编。
+2. 指标 definition 必须写清「怎么算」（字段/条件/公式），不要只写一句空话。
+3. 维度从业务分析角度提炼：时间 / 地域 / 状态 / 类型 / 渠道。
+4. 关系必须写清关联键与基数；一对多的关系 pre_agg_required 设为 true。
+5. 宁可少、不要编；判断不了的类型就不要输出。
+
+用户描述的业务场景：
+{text}"""
+
+
+def model_scenario(text):
+    """业务场景 → 完整语义模型（实体/关系/指标/维度），全部落库为「待审核」（candidate）。
+
+    ★ 复用 _apply：实体/关系/指标走 source=ai 落库（candidate，不覆盖人工）；
+      维度走 semantic_modeling.upsert_dimension（source=ai → candidate）。
+    """
+    if not (text or "").strip():
+        return {"results": [], "model_name": "", "model_display": "", "model_description": ""}
+    raw = llm.chat("", build_scenario_prompt(text), timeout=90)
+    data = _parse_json(raw)
+    results = []
+    for it in data.get("entities") or []:
+        results.append(_apply("entity", it))
+    for it in data.get("relationships") or []:
+        results.append(_apply("relationship", it))
+    for it in data.get("metrics") or []:
+        results.append(_apply("metric", it))
+    for it in data.get("dimensions") or []:
+        results.append(_apply("dimension", it))
+    return {
+        "model_name": data.get("model_name", ""),
+        "model_display": data.get("model_display", ""),
+        "model_description": data.get("model_description", ""),
+        "results": results,
+    }

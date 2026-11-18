@@ -94,6 +94,46 @@ def _fix_datetrunc(sql):
 # ═══════════════════════════════════════════════════════════
 # 第一道：清洗 —— 把 SQL 从模型的一堆废话里抠出来
 # ═══════════════════════════════════════════════════════════
+_SQL_LINE_RE = re.compile(
+    r"^\s*(?:"
+    r"SELECT\b|"                          # SELECT 开头
+    r"WITH\s+[A-Za-z_][A-Za-z0-9_$]*|"    # 真 CTE：WITH 后必须跟【英文/数字】标识符
+    r"EXPLAIN\b|"                         # EXPLAIN 开头
+    r"\(\s*SELECT\b|"                     # 子查询 (SELECT ...
+    r"\(\s*WITH\s+[A-Za-z_]|"             # 子查询 (WITH <标识符> ...
+    r"--|"                                # -- 行注释（拒答/说明行，必须保留）
+    r"/\*"                                # /* 块注释
+    r")", re.IGNORECASE)
+
+
+def _strip_llm_preamble(text):
+    """剥掉模型写在 SQL 前面的自然语言“开场白”（思路/说明/决策）。
+
+    ★ 为什么需要这一步？
+      模型输出前常把自己的决策也写出来，第一行甚至以「WITH」开头，
+      例如「WITH 不用了，直接三块独立统计 CROSS JOIN 输出一行：」。
+      这种文字被 sqlglot 当成 CTE 语法解析会直接报错（Expecting ( ...），
+      最终触发 fail-closed 拒绝执行 —— 而真正的 SQL 其实完全合法。
+      （`_refusal_reason` 只认 `^(select|with)\\b`，会把它误判成“是 SQL”放过去，
+        所以必须在这里就剥掉，不能再等后面的解析器去兜。）
+
+    ★ 判定「一行是 SQL 开头，而不是开场白」的标准（见 _SQL_LINE_RE）：
+      行首是 SELECT / WITH<空格>ASCII 标识符（真 CTE）/ EXPLAIN / (SELECT / (WITH，
+      或者是 -- 行注释、/* 块注释。
+      其余行（含中文说明、WITH 后面跟中文的“伪 CTE”）都算开场白，逐行剥掉。
+      关键：WITH 后面必须是【英文/数字】标识符才算真 CTE ——
+            “WITH 不用了” 里的“不用了”是中文，会被正确判成开场白。
+    """
+    lines = text.split("\n")
+    start = 0
+    n = len(lines)
+    while start < n:                       # 从第一行往后扫
+        if _SQL_LINE_RE.match(lines[start]):
+            break                          # 遇到真正的 SQL 开头 → 从这里开始保留
+        start += 1                         # 空行 / 开场白行 → 跳过
+    return "\n".join(lines[start:]).strip()
+
+
 def clean_sql(raw):
     """
     模型输出很随性，可能带 ``` 代码块、带分号、带解释文字
@@ -114,12 +154,15 @@ def clean_sql(raw):
         text = m.group(1).strip()          # group(1) = 第 1 个捕获组的内容
     #   【SQL 类比】≈ REGEXP_SUBSTR 从文本里截出中间那段
 
-    # ② 去掉结尾的分号（统一格式）
+    # ② 剥掉模型写在 SQL 前面的自然语言“开场白”（如「WITH 不用了，直接 CROSS JOIN 输出一行：」）
+    text = _strip_llm_preamble(text)
+
+    # ③ 去掉结尾的分号（统一格式）
     text = text.rstrip(";").strip()
     #   rstrip(";") = 只去掉【右边】的分号
     #   注意不能用 strip(";")，那会把开头的分号也去掉（虽然 SQL 不会以分号开头）
 
-    # ③ 把 dateTrunc('MONTH', x) 等改成 toStartOfMonth(x)（见上方说明，防 code 36 且跨客户端兼容）
+    # ④ 把 dateTrunc('MONTH', x) 等改成 toStartOfMonth(x)（见上方说明，防 code 36 且跨客户端兼容）
     text = _fix_datetrunc(text)
 
     return text

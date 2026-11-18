@@ -32,7 +32,65 @@ import config
 import config_store
 import db
 import enum_parse          # ★ 共享的"从注释解析枚举含义"（结果表展示也用同一套）
+import guard
 import knowledge
+
+
+_TAX = {}          # {"tables": set, "ts": float}
+
+
+def _system_tables():
+    """系统侧允许扫描的真实表集合（用于校验拼出来的 SQL 只碰真实存在的表）
+
+    ★ 为什么用"全部真实表"而不是"业务表"或"ACL 可见表"？
+      · 用 ACL 可见表 → 管理员想给"还没授权出去的表"补知识就先被自己挡住，功能废掉；
+      · 用 business_tables → 它剔除了噪声表，但 suggest 可能正要给某张噪声表补注释。
+      这里要挡的不是"该不该开放"，而是"表名是不是拼错/被注入"，
+      所以白名单取【数仓里真实存在的表】——已经足够挡住任意表名注入。
+
+    ★ 带 5 分钟缓存：db.list_tables() 是一次 ClickHouse 元数据查询，
+      而本函数在扫描 200+ 字段时会被反复调用。
+    """
+    import time as _t
+    now = _t.time()
+    if _TAX.get("tables") and now - _TAX.get("ts", 0) < 300:
+        return _TAX["tables"]
+    try:
+        v = set(db.list_tables() or [])
+    except Exception:
+        v = set()
+    if v:                                  # 取表失败时不要缓存空集，下次重试
+        _TAX["tables"] = v
+        _TAX["ts"] = now
+    return v
+
+
+def _system_query(sql, table):
+    """★ 系统拼装的只读 SQL 的统一出口。
+
+    ★ 为什么必须收口？（这是本文件原来唯一的越权风险点）
+      原先这里直接 `db.execute_sql(sql)`，是【全仓唯一一条不经过取数闸门的执行通道】：
+      既不校验只读，也不校验表名。虽然 SQL 由系统拼装、table 来自建表清单，
+      但"相信上游拼得对"正是本项目栽过跟头的假设（自愈 SQL 绕校验那次）。
+      现在统一走三步：只读校验 → 业务表白名单 → 唯一执行出口 agent._exec_sql。
+
+    ★ 为什么不复用 _pre_execute_check？
+      那道闸门需要 ctx/resolved（语义上下文）才能跑五维校验，而缺口扫描
+      跑的是 uniqExact / groupUniqArray 这类元数据聚合，没有业务口径可校验。
+      这里只做"它该做的那部分"：只读 + 表合规。**不假装跑了完整校验。**
+    """
+    import agent          # 延迟导入：gaps 被 server/suggest 引用，加载期不必拉起 LLM 栈
+
+    ok, why = guard.sql_guard(sql)
+    if not ok:
+        raise RuntimeError(f"缺口扫描 SQL 未通过只读校验：{why}")
+
+    t = (table or "").strip().strip("`")
+    allowed = _system_tables()
+    if t and allowed and t not in allowed:
+        raise RuntimeError(f"缺口扫描拒绝了非业务表：{t}")
+
+    return agent._exec_sql(sql)
 
 
 # 名字像枚举的关键词（用来缩小扫描范围 —— 全表逐字段查 distinct 太重）
@@ -89,7 +147,7 @@ def _query_distinct(table, cols):
         return {}
     exprs = ", ".join(f"uniqExact(`{c}`) AS c{i}" for i, c in enumerate(cols))
     sql = f"SELECT {exprs} FROM {config.CK_DATABASE}.{table}"
-    _, rows = db.execute_sql(sql)
+    _, rows = _system_query(sql, table)
     return {c: int(v) for c, v in zip(cols, rows[0])}
 
 
@@ -112,7 +170,7 @@ def fetch_values(table, cols):
         return {}
     exprs = ", ".join(f"groupUniqArray(`{c}`) AS c{i}" for i, c in enumerate(cols))
     sql = f"SELECT {exprs} FROM {config.CK_DATABASE}.{table}"
-    _, rows = db.execute_sql(sql)
+    _, rows = _system_query(sql, table)
     out = {}
     for c, vals in zip(cols, rows[0]):
         try:
@@ -155,6 +213,12 @@ def scan_table_gaps(tables=None):
     """
     table_c = config_store.get_table_comments()
     table_src = config_store.get_table_comment_sources()   # {表: manual|ai}
+    # ★ 治理口径：只有"能进生产检索"的注释才算补上了。
+    #   否则会出现最坑人的一幕：页面上写着"已补齐、绿色通过"，而模型检索时
+    #   根本拿不到这条注释（它还是 candidate），用户以为好了、实际没好。
+    _vis_t = config_store.get_visible_knowledge_ids("table_comments", "table_name")
+    if _vis_t is not None:
+        table_c = {k: v for k, v in table_c.items() if k in _vis_t}
     ent_by_table = {}
     for e in config_store.get_entities():
         ent_by_table.setdefault(e.get("table_name") or "", []).append(e)
@@ -226,6 +290,15 @@ def scan(tables=None, with_values=True):
     table_c = config_store.get_table_comments()
     col_c = config_store.get_column_comments()
     col_s = config_store.get_column_comment_sources()   # {表.字段: manual|ai}
+    # ★ 治理口径（同 table_comment 那段）：candidate 注释还没进检索，
+    #   不能在这里算作"已补"，否则缺口页会给人虚假的完成感。
+    _vis_t2 = config_store.get_visible_knowledge_ids("table_comments", "table_name")
+    if _vis_t2 is not None:
+        table_c = {k: v for k, v in table_c.items() if k in _vis_t2}
+    _vis_c = config_store.get_visible_knowledge_ids(
+        "column_comments", "table_name || '.' || column_name")
+    if _vis_c is not None:
+        col_c = {k: v for k, v in col_c.items() if k in _vis_c}
     db_c = db.fetch_comments(sorted(tables))
     db_table_c = db_c.get("tables", {})
     db_col_c = db_c.get("columns", {})

@@ -12,6 +12,7 @@ import config                        # 配置模块
 import config_store                  # ★ 配置存储（读表白名单）
 import db                            # 数据库模块
 import knowledge                     # 业务知识模块
+import governance                    # ★ 知识治理：生产检索按 status 准入
 
 # ★ 注意：这里【故意不】在顶部 import fastembed
 #   原因有两个：
@@ -88,6 +89,24 @@ def _build_tables(schema_rows):
     """[(表名,字段名,类型), ...] → RAG 需要的表知识库列表"""
     comments = knowledge.get_table_comments()       # ★ 表注释：人工维护的（优先级最高）
     col_comments = knowledge.get_column_comments()  # ★ 字段注释：人工维护的（优先级最高）
+    # ★ 治理准入（状态 + 来源两道闸）：
+    #   ① 状态闸：rejected/deprecated/archived 永不可见；candidate 仅非严格模式可见。
+    #   ② 来源闸：source='ai' 的注释在严格模式下不进生产（等价 candidate 待遇）。
+    #   两道闸都要，缺一不可 —— 只看来源会漏掉"人工录入但后来被判错"的条目，
+    #   只看状态会漏掉"状态没同步、但来源是 AI"的条目。
+    _t_src = config_store.get_table_comment_sources()
+    _t_vis = config_store.get_visible_knowledge_ids("table_comments", "table_name")
+    comments = {t: c for t, c in comments.items()
+                if (_t_vis is None or t in _t_vis)
+                and governance.visible_source(_t_src.get(t))}
+    _c_src = config_store.get_column_comment_sources()
+    # ★ 字段注释的键是 "表名.字段名"（复合键）——必须用表达式取 id，
+    #   否则同名不同表的字段会挤成一条（如 carstate 在多张表含义不同）。
+    _c_vis = config_store.get_visible_knowledge_ids(
+        "column_comments", "table_name || '.' || column_name")
+    col_comments = {k: v for k, v in col_comments.items()
+                    if (_c_vis is None or k in _c_vis)
+                    and governance.visible_source(_c_src.get(k))}
     # ★ 数据库注释只抓【可见的表】：整库字段注释有 16000+ 行，
     #   会撞上连接的 max_result_rows 上限被杀掉（我们就踩过这个坑，
     #   结果整库字段注释被静默丢弃）；而且没进 RAG 的表，注释也用不上。
@@ -340,13 +359,22 @@ def _build_index():
     all_rows = db.fetch_schema()                    # 从数据库抓【全部】表结构
     visible_rows = _filter_visible(all_rows)        # ★ 第一道过滤：按权限剔除不可见的表
     tables = _build_tables(visible_rows)            # 组装成 RAG 知识库（此时已不含敏感表）
+    # ★ 治理准入（status）：approved/无 status 可见；candidate 仅非严格模式可见；
+    #   draft/reviewing/deprecated/rejected/archived 永不进生产检索。
     metrics = knowledge.get_metrics()               # ★ 只取【已开放】的指标
+    _vis_m = config_store.get_visible_knowledge_ids("metrics", "name")
+    if _vis_m is not None:
+        metrics = [m for m in metrics if m["name"] in _vis_m]
     disabled_metrics = knowledge.get_disabled_metrics()
     #                   ★ 停用的指标不进向量索引（AI 检索不到口径），
     #                     但要单独存下来 —— agent 要用它做"问题级拦截"。
     #                     否则模型可能用字段硬算出一个错数（静默算错，最危险）。
 
-    dicts = _build_dicts(knowledge.get_dict_entries())   # ★ 数据字典（只取已开放的）
+    _raw_dicts = knowledge.get_dict_entries()
+    _vis_d = config_store.get_visible_knowledge_ids("dict_entries", "name")
+    if _vis_d is not None:
+        _raw_dicts = [d for d in _raw_dicts if d["name"] in _vis_d]
+    dicts = _build_dicts(_raw_dicts)                # ★ 数据字典（只取已开放 + 治理准入）
 
     # 给表的描述文本做向量
     table_vectors = list(model.embed([t["doc"] for t in tables]))
@@ -663,64 +691,6 @@ def named_tables(question, tables, min_chars=None):
 
 
 # ═══════════════════════════════════════════════════════════
-# 第 6 块：★ 对外的检索入口 —— 一次召回"表和指标"
-# ═══════════════════════════════════════════════════════════
-def retrieve(index, question):
-    """
-    完整检索流程：查指标 → 带出表 → 查表 → 合并
-
-    返回：(表名列表, 指标名列表, 说明, 表向量分数)
-    """
-    # ① 先检索指标
-    metric_names, _, metric_reason = _hybrid_retrieve(
-        question, index["metrics"], index["metric_vectors"],
-        index["model"], config.METRIC_THRESHOLD, config.METRIC_TOP_K,
-    )
-
-    # ② ★ 从命中的指标，自动带出它依赖的表
-    #   ★★ 这里必须再过一道白名单校验（真实踩过的坑）：
-    #      指标的"依赖表"是人工配的，可能
-    #        ① 表名写错/写的是别的库的表（比如配了真实库不存在的 dwd_order_all）
-    #        ② 指向一张未授权的表
-    #      不管哪种，这个表名都不该混进 prompt —— 否则模型会拿到一个
-    #      "查不到表结构的幽灵表名"，于是退回训练记忆去编表（编出过 orders，
-    #      最后被表级权限拦下）。宁可这里少带一张表，让 agent 的
-    #      "一张表都没检索到就拒绝"兜底生效 —— 拒绝比编造安全。
-    allowed = set(index["allowed_tables"])
-    tables_from_metrics = []
-    for m in index["metrics"]:                      # 遍历指标库
-        if m["name"] in metric_names:               # 只看命中的指标
-            for t in m["tables"]:                   # 看它依赖哪些表
-                if t not in allowed:                # ★ 不在白名单/不存在 → 丢弃
-                    print(f"⚠️ 指标「{m['name']}」依赖的表 {t} 不在白名单或不存在，已忽略")
-                    continue
-                if t not in tables_from_metrics:    # 去重
-                    tables_from_metrics.append(t)
-    #   ★ 这一步的意义：即使表检索失败，也不会一张表都没有
-    #     之前就是靠这一步，修好了"客单价"那题的幻觉问题
-
-    # ③ 再独立检索一次表
-    table_names, table_scores, table_reason = _hybrid_retrieve(
-        question, index["tables"], index["table_vectors"],
-        index["model"], config.TABLE_THRESHOLD, config.TABLE_TOP_K,
-    )
-
-    # ④ 合并两路结果：指标带出来的优先，检索到的补充
-    final_tables = list(tables_from_metrics)        # list() 复制一份，避免改动原列表
-    for t in table_names:                           # 遍历检索到的表
-        if t not in final_tables:                   # 去重
-            final_tables.append(t)
-
-    # ★ 说明文字要讲清楚"表是怎么来的"：
-    #   表检索这条线可能显示"未匹配"，但表其实是由命中的指标带出来的 ——
-    #   只写"表:未匹配"会让人误以为一张表都没召回（这个误会真实发生过）
-    if tables_from_metrics and not table_names:
-        table_desc = f"由指标带出 {', '.join(tables_from_metrics)}"
-    else:
-        table_desc = table_reason
-
-    info = f"指标:{metric_reason} | 表:{table_desc}"
-    return final_tables, metric_names, info, table_scores
 
 
 # ═══════════════════════════════════════════════════════════

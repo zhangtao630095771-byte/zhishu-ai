@@ -1,0 +1,162 @@
+{
+  "dataset": "evaluation/datasets/golden",
+  "limit": 6,
+  "started_at": "2026-10-29 09:08:40",
+  "weights": {
+    "sim": 0.45,
+    "table": 0.15,
+    "metric": 0.2,
+    "trust": 0.12,
+    "verify": 0.05,
+    "recency": 0.03
+  },
+  "groups": {
+    "A": {
+      "metrics": {
+        "overall_accuracy": 0.8333,
+        "intent_accuracy": 1.0,
+        "metric_accuracy": 0.8333,
+        "time_accuracy": 1.0,
+        "sql_accuracy": 0.75,
+        "table_retrieval_recall": 0.8,
+        "field_retrieval_recall": null,
+        "sql_execution_success_rate": 1.0,
+        "result_accuracy": null,
+        "grounding_accuracy": 1.0,
+        "hallucination_rate": 0.0,
+        "abstention_accuracy": null,
+        "p50_latency": 28.49,
+        "p95_latency": 57.03,
+        "avg_latency": 32.66,
+        "average_token": null,
+        "average_cost": null,
+        "consistency_rate": null,
+        "sample_count": 6,
+        "executed_count": 6,
+        "exp_case_hit_rate": 0.0,
+        "exp_failure_hit_rate": 0.0,
+        "exp_warning_total": 0,
+        "exp_case_hits": 0,
+        "api_error_count": 0,
+        "_valid": true
+      },
+      "flags": {
+        "EXP_ENABLED": false
+      }
+    },
+    "B": {
+      "metrics": {
+        "overall_accuracy": 0.8333,
+        "intent_accuracy": 1.0,
+        "metric_accuracy": 0.8333,
+        "time_accuracy": 1.0,
+        "sql_accuracy": 0.75,
+        "table_retrieval_recall": 0.8,
+        "field_retrieval_recall": null,
+        "sql_execution_success_rate": 1.0,
+        "result_accuracy": null,
+        "grounding_accuracy": 1.0,
+        "hallucination_rate": 0.0,
+        "abstention_accuracy": null,
+        "p50_latency": 19.59,
+        "p95_latency": 30.59,
+        "avg_latency": 22.37,
+        "average_token": null,
+        "average_cost": null,
+        "consistency_rate": null,
+        "sample_count": 6,
+        "executed_count": 6,
+        "exp_case_hit_rate": 0.1667,
+        "exp_failure_hit_rate": 0.0,
+        "exp_warning_total": 0,
+        "exp_case_hits": 1,
+        "api_error_count": 0,
+        "_valid": true
+      },
+      "flags": {
+        "EXP_ENABLED": true,
+        "EXP_SUCCESS_RECALL": true,
+        "EXP_FAIL_PREVENT": false,
+        "EXP_FAIL_REPAIR": false,
+        "EXP_RULES": false,
+        "EXP_EXACT_REUSE": false
+      }
+    },
+    "C": {
+      "metrics": {
+        "overall_accuracy": 0.8333,
+        "intent_accuracy": 1.0,
+        "metric_accuracy": 0.8333,
+        "time_accuracy": 1.0,
+        "sql_accuracy": 0.75,
+        "table_retrieval_recall": 0.8,
+        "field_retrieval_recall": null,
+        "sql_execution_success_rate": 1.0,
+        "result_accuracy": null,
+        "grounding_accuracy": 1.0,
+        "hallucination_rate": 0.0,
+        "abstention_accuracy": null,
+        "p50_latency": 17.55,
+        "p95_latency": 32.23,
+        "avg_latency": 20.58,
+        "average_token": null,
+        "average_cost": null,
+        "consistency_rate": null,
+        "sample_count": 6,
+        "executed_count": 6,
+        "exp_case_hit_rate": 0.1667,
+        "exp_failure_hit_rate": 0.5,
+        "exp_warning_total": 0,
+        "exp_case_hits": 1,
+        "api_error_count": 0,
+        "_valid": true
+      },
+      "flags": {
+        "EXP_ENABLED": true,
+        "EXP_SUCCESS_RECALL": true,
+        "EXP_FAIL_PREVENT": true,
+        "EXP_FAIL_REPAIR": true,
+        "EXP_RULES": false,
+        "EXP_EXACT_REUSE": false
+      }
+    },
+    "D": {
+      "metrics": {
+        "overall_accuracy": 1.0,
+        "intent_accuracy": 1.0,
+        "metric_accuracy": 1.0,
+        "time_accuracy": 1.0,
+        "sql_accuracy": 1.0,
+        "table_retrieval_recall": 1.0,
+        "field_retrieval_recall": null,
+        "sql_execution_success_rate": 1.0,
+        "result_accuracy": null,
+        "grounding_accuracy": 1.0,
+        "hallucination_rate": 0.0,
+        "abstention_accuracy": null,
+        "p50_latency": 18.53,
+        "p95_latency": 32.5,
+        "avg_latency": 21.31,
+        "average_token": null,
+        "average_cost": null,
+        "consistency_rate": null,
+        "sample_count": 6,
+        "executed_count": 6,
+        "exp_case_hit_rate": 0.3333,
+        "exp_failure_hit_rate": 0.5,
+        "exp_warning_total": 0,
+        "exp_case_hits": 2,
+        "api_error_count": 0,
+        "_valid": true
+      },
+      "flags": {
+        "EXP_ENABLED": true,
+        "EXP_SUCCESS_RECALL": true,
+        "EXP_FAIL_PREVENT": true,
+        "EXP_FAIL_REPAIR": true,
+        "EXP_RULES": true,
+        "EXP_EXACT_REUSE": false
+      }
+    }
+  }
+}

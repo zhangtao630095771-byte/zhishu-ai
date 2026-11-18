@@ -178,6 +178,101 @@ def test_index_state():
     check("failed 状态 + 错误摘要", s and s["status"] == "failed" and s.get("error"), str(s))
 
 
+def _col_status(table, col):
+    """直接读库，返回 (status, source) —— 不走任何业务封装，看的就是落库真相。"""
+    import sqlite3
+    con = sqlite3.connect(config_store.CONFIG_DB)
+    r = con.execute("SELECT status, source FROM column_comments WHERE table_name=? AND column_name=?",
+                    (table, col)).fetchone()
+    con.close()
+    return r or ("", "")
+
+
+def _metric_status(name):
+    import sqlite3
+    con = sqlite3.connect(config_store.CONFIG_DB)
+    r = con.execute("SELECT status, source FROM metrics WHERE name=?", (name,)).fetchone()
+    con.close()
+    return r or ("", "")
+
+
+def test_gov_status():
+    """
+    【GOV-4】写入路径的治理状态推导
+
+    ★ 为什么这组用例最关键？
+      严格模式下"只有 approved 进检索"，而 status 原来只有迁移脚本会写。
+      一旦写入路径不维护 status，会同时出两种反向的错：
+        · 人工复核完仍是 candidate → 复核白做、知识永远进不了检索；
+        · AI 写完停在默认 approved → 机器草稿直接进生产，治理形同虚设。
+      这两种错都不会报错，只会安静地错，所以必须用测试钉住。
+    """
+    print("\n【GOV-4】治理状态随写入来源自动推导")
+    col = f"c_{P}"
+    m = f"{P}gov_metric"
+    d = f"{P}gov_dict"
+
+    # ① AI 起草 → candidate（待复核，不进检索）
+    config_store.set_column_comment(TBL, col, "AI 起草的字段说明", source="ai")
+    st = _col_status(TBL, col)
+    check("AI 写字段注释落 candidate", st[0] == "candidate", str(st))
+    check("AI 写字段注释 source=ai", st[1] == "ai", str(st))
+
+    # ② 人工改一遍（= 页面「去复核并保存」）→ approved
+    config_store.set_column_comment(TBL, col, "人工复核后的字段说明", source="manual")
+    st = _col_status(TBL, col)
+    check("人工复核后转 approved", st[0] == "approved", str(st))
+    check("人工复核后 source=manual", st[1] == "manual", str(st))
+
+    # ③ AI 再覆盖人工版 → 必须被护栏挡住（否则人工白审）
+    affected = config_store.set_column_comment(TBL, col, "AI 想改回来", source="ai")
+    st = _col_status(TBL, col)
+    check("AI 不能覆盖人工版", affected == 0 and st[0] == "approved", str(st))
+
+    # ④ 人工判 rejected 后，AI 不许"复活"
+    ok, _ = config_store.set_knowledge_status("column_comments", f"{TBL}.{col}",
+                                              "rejected", operator="tester")
+    check("人工可置 rejected", ok, "")
+    config_store.set_column_comment(TBL, col, "AI 想复活这条", source="ai")
+    st = _col_status(TBL, col)
+    check("AI 不复活 rejected", st[0] == "rejected", str(st))
+
+    # ⑤ 指标（P1 层）：AI → candidate，人工 → approved，AI 覆盖被挡
+    config_store.upsert_metric({"name": m, "definition": "AI 草稿口径", "tables": []}, source="ai")
+    check("AI 建指标落 candidate", _metric_status(m)[0] == "candidate", str(_metric_status(m)))
+    check("AI 建指标 source=ai", _metric_status(m)[1] == "ai", str(_metric_status(m)))
+    config_store.upsert_metric({"name": m, "definition": "人工核对后的口径", "tables": []})
+    check("人工保存指标转 approved", _metric_status(m)[0] == "approved", str(_metric_status(m)))
+    ok2, _ = config_store.upsert_metric({"name": m, "definition": "AI 想改", "tables": []}, source="ai")
+    check("AI 不覆盖人工指标", ok2 is False, str(_metric_status(m)))
+
+    # ⑥ 复核队列：能列出 candidate，核准后移出队列
+    config_store.upsert_dict_entry({"name": d, "items": []}, source="ai")
+    keys = [i["key"] for i in config_store.list_pending_knowledge()]
+    check("复核队列能列出 candidate", d in keys, str(keys[:5]))
+    ok3, _ = config_store.set_knowledge_status("dict_entries", d, "approved", operator="tester")
+    keys = [i["key"] for i in config_store.list_pending_knowledge()]
+    check("核准后移出队列", ok3 and d not in keys, str(keys[:5]))
+
+    # ⑦ 非法输入必须被拒（页面参数不可信）
+    check("拒绝非法层级", config_store.set_knowledge_status("users", "x", "approved")[0] is False)
+    check("拒绝非法状态", config_store.set_knowledge_status("metrics", m, "deleted")[0] is False)
+    check("拒绝畸形复合键",
+          config_store.set_knowledge_status("column_comments", "没有点分隔", "approved")[0] is False)
+
+    # 清理
+    for fn, args in ((config_store.delete_column_comment, (TBL, col)),
+                     (config_store.delete_metric, (m,)),
+                     (config_store.delete_dict_entry, (d,))):
+        try:
+            fn(*args, operator="tester")
+        except Exception:
+            try:
+                fn(*args)
+            except Exception:
+                pass
+
+
 if __name__ == "__main__":
     _cleanup()
     test_migration()
@@ -186,6 +281,7 @@ if __name__ == "__main__":
     test_enable_disable_history()
     test_comment_history()
     test_index_state()
+    test_gov_status()
     _cleanup()
     print("\n" + "=" * 60)
     print(f"🎉 全部通过（{len(PASSED)}/{len(PASSED) + len(FAILED)}）"

@@ -22,11 +22,15 @@ import config
 import config_store
 import knowledge
 import rag
+import governance
 
 
 # ═══════════════════════════════════════════════════════════
 # 优先级常量
 # ═══════════════════════════════════════════════════════════
+# ★ 这里 P0~P4 是【执行时检索优先级】（决定检索/注入顺序），数值 0~4。
+#   落库侧的分层已显式建模为每张知识表的 knowledge_level 字段，
+#   其「表名 → 层级」映射的唯一事实源在 config_store.KNOWLEDGE_LEVEL（两者数值对齐）。
 P0, P1, P2, P3, P4 = 0, 1, 2, 3, 4
 TIER_NAME = {0: "P0", 1: "P1", 2: "P2", 3: "P3", 4: "P4"}
 
@@ -44,8 +48,20 @@ def enrich_index(index):
         return index
 
     entities = [e for e in knowledge.get_entities() if e.get("enabled", True)]  # 停用实体不进向量索引
+    # ★ 治理准入（status）：approved/无 status 可见；candidate 仅非严格模式可见
+    _vis_e = config_store.get_visible_knowledge_ids("entities", "name")
+    if _vis_e is not None:
+        entities = [e for e in entities if e["name"] in _vis_e]
     relationships = knowledge.get_relationships(enabled_only=True)
+    _vis_r = config_store.get_visible_knowledge_ids("relationships", "id")
+    if _vis_r is not None:
+        relationships = [r for r in relationships if r["id"] in _vis_r]
     docs = knowledge.get_kb_docs(enabled_only=True)
+    # ★ 治理准入（status）：业务文档是 P4 层，优先级最低，但不能当"免检通道"——
+    #   AI 生成的文档同样必须复核后才进检索。
+    _vis_doc = config_store.get_visible_knowledge_ids("kb_docs", "id")
+    if _vis_doc is not None:
+        docs = [d for d in docs if d["id"] in _vis_doc]
 
     # ── 实体向量：doc = 实体名 + 别名 + 主表 + 注释 ──
     ent_items = []
@@ -355,6 +371,15 @@ def retrieve_semantic(index, question, understanding=None):
         if (fe in wanted_entities or te in wanted_entities or
                 fe_tbl in wanted_tables or te_tbl in wanted_tables):
             rel_hit.append(rel)
+            # ★ 关系命中 → 把对端表纳入 wanted_tables。
+            #   否则 P3 实体过滤会把关系对端表当「跨业务线表」丢掉：模型看得到
+            #   JOIN 关系（p2_relationships），却看不到对端表的字段结构（表被过滤、
+            #   schema 没注入），只能退而求其次用错表。
+            #   实测「来源渠道为APP的客户」：用户注册明细表(ods_user_register_detail_all)
+            #   与客户表有 1:N 关系、关系也命中了，但因登记了独立实体「用户注册明细」，
+            #   被实体过滤误杀 → 模型拿订单表 channel_source 顶替，把「注册渠道」算成「发单渠道」。
+            wanted_tables.add(fe_tbl)
+            wanted_tables.add(te_tbl)
     # 去重（按 id）
     seen = set()
     for rel in rel_hit:

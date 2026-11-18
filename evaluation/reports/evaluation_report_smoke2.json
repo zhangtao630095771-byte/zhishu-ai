@@ -1,0 +1,345 @@
+{
+  "metrics": {
+    "overall_accuracy": 1.0,
+    "intent_accuracy": null,
+    "metric_accuracy": 1.0,
+    "time_accuracy": null,
+    "sql_accuracy": 1.0,
+    "table_retrieval_recall": 1.0,
+    "field_retrieval_recall": null,
+    "sql_execution_success_rate": 1.0,
+    "result_accuracy": null,
+    "grounding_accuracy": 1.0,
+    "hallucination_rate": 0.0,
+    "abstention_accuracy": null,
+    "p50_latency": 31.52,
+    "p95_latency": 31.52,
+    "avg_latency": 31.52,
+    "average_token": null,
+    "average_cost": null,
+    "consistency_rate": null,
+    "sample_count": 1,
+    "executed_count": 1,
+    "exp_case_hit_rate": 1.0,
+    "exp_failure_hit_rate": 1.0,
+    "exp_warning_total": 0,
+    "exp_case_hits": 1,
+    "result_verdict_distribution": {},
+    "result_exact_rate": null,
+    "result_compared_count": 0,
+    "api_error_count": 0,
+    "_valid": true
+  },
+  "results": [
+    {
+      "id": 1,
+      "name": "代驾订单量/完单量/完单率（status=40 口径）",
+      "category": "regression",
+      "difficulty": null,
+      "question": "查询代驾订单的订单量、完单量、完单率",
+      "ok": true,
+      "error": "",
+      "sql": "SELECT\n    COUNT(*) AS `代驾订单量`,\n    SUM(CASE WHEN status = 40 THEN 1 ELSE 0 END) AS `代驾完单量`,\n    round(COALESCE(SUM(CASE WHEN status = 40 THEN 1 ELSE 0 END) * 1.0 / COUNT(*), 0), 4) AS `代驾完单率`\nFROM ctc_data_warehouse.ods_valet_order_all\nWHERE order_time >= now() - INTERVAL 30 DAY",
+      "tables": [
+        "ods_valet_order_all",
+        "ods_valet_fee_detail_all",
+        "ods_tu_large_handcart_order_all",
+        "dwd_tu_order_lab_all"
+      ],
+      "metrics": [
+        "代驾完单率",
+        "代驾完单量",
+        "代驾订单量"
+      ],
+      "understanding": {
+        "intent": "summary",
+        "metrics": [
+          "订单量",
+          "完单量",
+          "完单率"
+        ],
+        "entities": [
+          "代驾订单"
+        ],
+        "dimensions": [],
+        "time_range": "",
+        "filters": [],
+        "ambiguity": "",
+        "degraded": false
+      },
+      "answer": "",
+      "validation": [
+        {
+          "severity": "warning",
+          "tier": "P3",
+          "rule": "column_check_degraded",
+          "message": "SQL 解析失败，列级存在性校验已降级跳过",
+          "suggestion": "检查 SQL 方言/语法；表级权限校验仍然生效"
+        }
+      ],
+      "experience": {
+        "decision": "reference",
+        "cases": [
+          {
+            "id": 155,
+            "case_no": "EXP-20261029-0155",
+            "score": 0.607,
+            "trust": "golden",
+            "verify": "manual_confirmed",
+            "reasons": [
+              "语义相似 0.623",
+              "表重合 0.23",
+              "可信 golden",
+              "验证 manual_confirmed"
+            ]
+          }
+        ],
+        "failures": [
+          {
+            "id": 125,
+            "case_no": "EXP-20261029-0125",
+            "score": 0.586,
+            "failure_type": "sql_error"
+          },
+          {
+            "id": 161,
+            "case_no": "EXP-20261029-0161",
+            "score": 0.5492,
+            "failure_type": "wrong_field"
+          }
+        ],
+        "rules": [],
+        "rejected": [
+          {
+            "case_no": "EXP-20261029-0002",
+            "reason": "与本次召回的表集合无交集",
+            "stage": "applicability"
+          },
+          {
+            "case_no": "EXP-20261029-0034",
+            "reason": "与本次召回的表集合无交集",
+            "stage": "applicability_failure"
+          },
+          {
+            "case_no": "EXP-20261029-0035",
+            "reason": "与本次召回的表集合无交集",
+            "stage": "applicability_failure"
+          },
+          {
+            "case_no": "EXP-20261029-0036",
+            "reason": "与本次召回的表集合无交集",
+            "stage": "applicability_failure"
+          },
+          {
+            "case_no": "EXP-20261029-0037",
+            "reason": "与本次召回的表集合无交集",
+            "stage": "applicability_failure"
+          },
+          {
+            "case_no": "EXP-20261029-0038",
+            "reason": "与本次召回的表集合无交集",
+            "stage": "applicability_failure"
+          },
+          {
+            "case_no": "EXP-20261029-0039",
+            "reason": "与本次召回的表集合无交集",
+            "stage": "applicability_failure"
+          },
+          {
+            "case_no": "EXP-20261029-0062",
+            "reason": "与本次召回的表集合无交集",
+            "stage": "applicability_failure"
+          },
+          {
+            "case_no": "EXP-20261029-0063",
+            "reason": "与本次召回的表集合无交集",
+            "stage": "applicability_failure"
+          },
+          {
+            "case_no": "EXP-20261029-0064",
+            "reason": "涉及当前不可访问的表：['tu_guaranty_order', 'tu_guaranty_order_scheme']",
+            "stage": "applicability_failure"
+          },
+          {
+            "case_no": "EXP-20261029-0067",
+            "reason": "与本次召回的表集合无交集",
+            "stage": "applicability_failure"
+          },
+          {
+            "case_no": "EXP-20261029-0068",
+            "reason": "与本次召回的表集合无交集",
+            "stage": "applicability_failure"
+          },
+          {
+            "case_no": "EXP-20261029-0069",
+            "reason": "与本次召回的表集合无交集",
+            "stage": "applicability_failure"
+          },
+          {
+            "case_no": "EXP-20261029-0071",
+            "reason": "与本次召回的表集合无交集",
+            "stage": "applicability_failure"
+          },
+          {
+            "case_no": "EXP-20261029-0084",
+            "reason": "指标口径与本次识别不一致",
+            "stage": "applicability_failure"
+          },
+          {
+            "case_no": "EXP-20261029-0085",
+            "reason": "指标口径与本次识别不一致",
+            "stage": "applicability_failure"
+          },
+          {
+            "case_no": "EXP-20261029-0086",
+            "reason": "指标口径与本次识别不一致",
+            "stage": "applicability_failure"
+          },
+          {
+            "case_no": "EXP-20261029-0087",
+            "reason": "指标口径与本次识别不一致",
+            "stage": "applicability_failure"
+          },
+          {
+            "case_no": "EXP-20261029-0088",
+            "reason": "指标口径与本次识别不一致",
+            "stage": "applicability_failure"
+          },
+          {
+            "case_no": "EXP-20261029-0089",
+            "reason": "指标口径与本次识别不一致",
+            "stage": "applicability_failure"
+          },
+          {
+            "case_no": "EXP-20261029-0095",
+            "reason": "与本次召回的表集合无交集",
+            "stage": "applicability_failure"
+          },
+          {
+            "case_no": "EXP-20261029-0106",
+            "reason": "指标口径与本次识别不一致",
+            "stage": "applicability_failure"
+          },
+          {
+            "case_no": "EXP-20261029-0111",
+            "reason": "指标口径与本次识别不一致",
+            "stage": "applicability_failure"
+          },
+          {
+            "case_no": "EXP-20261029-0121",
+            "reason": "与本次召回的表集合无交集",
+            "stage": "applicability_failure"
+          },
+          {
+            "case_no": "EXP-20261029-0129",
+            "reason": "指标口径与本次识别不一致",
+            "stage": "applicability_failure"
+          },
+          {
+            "case_no": "EXP-20261029-0140",
+            "reason": "与本次召回的表集合无交集",
+            "stage": "applicability_failure"
+          }
+        ],
+        "elapsed_ms": 2700
+      },
+      "experience_warnings": [],
+      "rows_preview": [
+        [
+          3942,
+          1158,
+          0.2938
+        ]
+      ],
+      "latency": 31.52,
+      "trace": [
+        {
+          "step": "enrich",
+          "ms": 1560.9
+        },
+        {
+          "step": "understand",
+          "ms": 2335.1
+        },
+        {
+          "step": "retrieve",
+          "ms": 64.4
+        },
+        {
+          "step": "resolve_prompt",
+          "ms": 2728.0
+        },
+        {
+          "step": "generate",
+          "ms": 2926.7
+        },
+        {
+          "step": "validate",
+          "ms": 8.6
+        },
+        {
+          "step": "execute",
+          "ms": 97.5
+        },
+        {
+          "step": "result_validate_answer",
+          "ms": 20106.8
+        }
+      ],
+      "scores": {
+        "ok": {
+          "status": true,
+          "detail": "ok=True 期望=True error="
+        },
+        "abstain": {
+          "status": null,
+          "detail": ""
+        },
+        "tables": {
+          "status": true,
+          "detail": "缺表=[] 实际=['ods_valet_order_all', 'ods_valet_fee_detail_all', 'ods_tu_large_handcart_order_all', 'dwd_tu_order_lab_all']"
+        },
+        "metrics": {
+          "status": true,
+          "detail": "缺指标=[] 实际=['代驾完单率', '代驾完单量', '代驾订单量']"
+        },
+        "forbidden": {
+          "status": null,
+          "detail": ""
+        },
+        "sql_contains": {
+          "status": true,
+          "detail": "SQL缺谓词=[]"
+        },
+        "sql_not_contains": {
+          "status": null,
+          "detail": ""
+        },
+        "time": {
+          "status": null,
+          "detail": ""
+        },
+        "result": {
+          "status": null,
+          "detail": ""
+        },
+        "format": {
+          "status": null,
+          "detail": ""
+        },
+        "grounding": {
+          "status": true,
+          "detail": "无依据表=[]"
+        },
+        "hallucination": {
+          "status": true,
+          "detail": ""
+        }
+      },
+      "result_verdict": null
+    }
+  ],
+  "dataset": "evaluation/datasets/regression",
+  "tag": "smoke2",
+  "generated_at": "2026-11-06T17:07:25.872780"
+}
