@@ -577,7 +577,7 @@ function dashSectionEval(ev) {
   return `
   <div class="dash-sec">
     <div class="dash-sec-head"><h4>AI 评测质量</h4>
-      <span class="muted">评测版本：${esc(ev.tag || "—")} · 样本 ${ev.sample_count ?? "N/A"} 条（成功执行 ${ev.executed_count ?? "N/A"}） · ${esc(ev.generated_at || "—")}</span></div>
+      <span class="muted">评测版本：${esc(ev.tag || "—")} · 样本 ${ev.sample_count ?? "N/A"} 条（成功执行 ${ev.executed_count ?? "N/A"}） · ${esc((ev.generated_at || "—").slice(0, 16).replace("T", " "))}</span></div>
     <div class="dash-eval-meta muted">鼠标悬停各指标可查看口径解释；本区块为离线评测集结果，不代表线上取数实时表现。</div>
     ${groupHtml}
     ${ev.failures && ev.failures.length
