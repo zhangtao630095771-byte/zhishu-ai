@@ -162,7 +162,15 @@ DEFAULT_PROMPTS = {
           `s.customer != 0` 判断关联成功；若该字段业务上允许 0，则不可用此法。
     ★ 例外：右表字段本身是 Nullable 类型时，未匹配补 NULL，`IS NULL` 判断仍然有效。
     ★ 边界：本规则【只针对 ClickHouse】；SQLite / MySQL 等方言保持标准 NULL 判断，
-      不要改它们的 IS NULL / IS NOT NULL 逻辑。""",
+      不要改它们的 IS NULL / IS NOT NULL 逻辑。
+22. ★ ClickHouse 集合运算（把多张表 / 多个来源的行【纵向合并】时）必须写 `UNION ALL`
+    （去重才显式写 `UNION DISTINCT`），【禁止】裸 `UNION`：
+    ClickHouse 不接受裸 UNION，会语法报错（sqlglot 用 CH 方言解析即失败），
+    进而触发字段级权限闸门 fail-closed，整条查询被拒。
+    正确写法：`... UNION ALL SELECT ...`。
+    ★ 与规则 8 的区别（别混淆）：规则 8 说的是「对比多个时间段」不要用 UNION ALL
+    （会输出多行、列名错位，应改用 CASE WHEN 横向并排）；本条针对的是
+    「合并不同表 / 不同来源的行」的场景，此时 UNION ALL 才是唯一正确写法。""",
 
     "role": "你是一名资深数据分析师，负责把用户的自然语言问题转换成 {dialect} SQL。",
 }

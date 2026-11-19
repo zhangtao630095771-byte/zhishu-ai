@@ -156,9 +156,14 @@ def _finalize_sql(raw_sql):
       （模型自己写了前缀也不会变成两层 —— qualify_tables 会跳过已有前缀的表）
     """
     sql = guard.clean_sql(raw_sql)                   # ① 清洗：去掉 ``` 和分号
+    if config.DB_TYPE == "clickhouse":
+        sql = guard.normalize_union(sql)
+        #   ② 裸 UNION → UNION ALL（ClickHouse 只认 ALL/DISTINCT，裸 UNION 会让
+        #      字段级权限闸门解析失败而 fail-closed 拒绝；只对 ClickHouse 改写，
+        #      标准 SQL 里裸 UNION 是合法去重语义，不能动）
     if config.DB_TYPE == "clickhouse" and config.CK_DATABASE:
         sql = guard.qualify_tables(sql, config.CK_DATABASE)
-        #   ② 补库名前缀（只对真实数仓有意义；SQLite 没有"库"这一层）
+        #   ③ 补库名前缀（只对真实数仓有意义；SQLite 没有"库"这一层）
     return sql
 
 

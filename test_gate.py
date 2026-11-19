@@ -278,6 +278,9 @@ _EXEC_ALLOWED_FILES = {
     "check1.py",         # 一次性手工排查脚本（不进服务）
     "ck_check.py",       # 运维只读体检脚本
     "main.py",           # CLI
+    # ★ 一次性种子/迁移脚本（_seed_* 直接连库灌数据，不属于运行时执行通道）
+    "_seed_northstar_metric_pointer.py",
+    "_seed_northstar_metrics.py",
 }
 
 

@@ -454,6 +454,60 @@ def run_source_field_tests():
 
 
 # ═══════════════════════════════════════════════════════════
+# 第七部分：裸 UNION 改写（ClickHouse 方言要求写全 ALL / DISTINCT）
+# ═══════════════════════════════════════════════════════════
+UNION_CASES = [
+    #   (说明, 输入 SQL, 期望输出)
+    ("裸 UNION → UNION ALL", "SELECT 1 UNION SELECT 2", "SELECT 1 UNION ALL SELECT 2"),
+    ("多个裸 UNION 全部改写", "SELECT 1 UNION SELECT 2 UNION SELECT 3",
+     "SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3"),
+    ("UNION ALL 原样保留", "SELECT 1 UNION ALL SELECT 2", "SELECT 1 UNION ALL SELECT 2"),
+    ("UNION DISTINCT 原样保留", "SELECT 1 UNION DISTINCT SELECT 2", "SELECT 1 UNION DISTINCT SELECT 2"),
+    ("小写 union 也能识别", "select 1 union select 2", "select 1 union ALL select 2"),
+    ("跨行裸 UNION", "SELECT 1\nUNION\nSELECT 2", "SELECT 1\nUNION ALL\nSELECT 2"),
+    ("字符串字面量 UNION 不动", "SELECT 'UNION' AS x", "SELECT 'UNION' AS x"),
+    ("WHERE 里的字符串不动", "SELECT * FROM t WHERE c = 'UNION'", "SELECT * FROM t WHERE c = 'UNION'"),
+    ("行注释里的 UNION 不动", "SELECT 1 -- UNION\n", "SELECT 1 -- UNION\n"),
+    ("块注释里的 UNION 不动", "SELECT 1 /* UNION */", "SELECT 1 /* UNION */"),
+    ("UNIONX 不是关键字", "SELECT col_unionx FROM t", "SELECT col_unionx FROM t"),
+]
+
+
+def run_union_tests():
+    """
+    跑第七部分：guard.normalize_union（裸 UNION → UNION ALL）
+
+    ★ 为什么要有专项测试？
+      ClickHouse 不接受裸 UNION，模型却常只写 UNION，导致 sqlglot 的 CH 方言
+      解析失败 → 字段级权限闸门 fail-closed 拒绝（报「字段级权限拦截」）。
+      normalize_union 在收尾环节确定性补上 ALL，必须保证：
+        裸 UNION 被改写、UNION ALL / DISTINCT 原样保留、
+        字符串 / 注释里的 UNION 不被误伤。
+    """
+    print()
+    print("=" * 78)
+    print("第七部分：裸 UNION → UNION ALL（ClickHouse 方言要求）")
+    print("=" * 78)
+
+    passed = 0
+    for label, sql, expected in UNION_CASES:
+        got = guard.normalize_union(sql)
+        ok = (got == expected)
+        if ok:
+            passed += 1
+        print(f"{'✅' if ok else '❌'} [UNION改写] {label:<24}")
+        if not ok:
+            print(f"        输入：{sql!r}")
+            print(f"        期望：{expected!r}")
+            print(f"        实际：{got!r}")
+
+    total = len(UNION_CASES)
+    print("-" * 78)
+    print(f"通过：{passed}/{total}")
+    return passed == total
+
+
+# ═══════════════════════════════════════════════════════════
 # 主流程
 # ═══════════════════════════════════════════════════════════
 if __name__ == "__main__":
@@ -467,13 +521,14 @@ if __name__ == "__main__":
     r4 = run_limit_tests()          # 第四部分：LIMIT 注入
     r5 = run_qualify_tests()        # 第五部分：库名前缀
     r6 = run_source_field_tests()   # 第六部分：输出列来源字段
+    r7 = run_union_tests()          # 第七部分：裸 UNION → UNION ALL
 
     print()
     print("=" * 78)
-    if r1 and r2 and r3 and r4 and r5 and r6:
+    if r1 and r2 and r3 and r4 and r5 and r6 and r7:
         print("🎉 全部通过")
     else:
         print("⚠️ 有失败项，见上方 ❌ 标记")
     print("=" * 78)
     # ★ 失败必须让进程返回非 0（否则上层 runner 会把失败当成功）
-    raise SystemExit(0 if (r1 and r2 and r3 and r4 and r5 and r6) else 1)
+    raise SystemExit(0 if (r1 and r2 and r3 and r4 and r5 and r6 and r7) else 1)

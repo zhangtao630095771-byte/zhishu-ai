@@ -92,6 +92,92 @@ def _fix_datetrunc(sql):
 
 
 # ═══════════════════════════════════════════════════════════
+# 裸 UNION 自动改写（ClickHouse 方言要求集合运算必须写全 ALL / DISTINCT）
+# ═══════════════════════════════════════════════════════════
+# 【为什么需要？】
+#   ClickHouse 不接受裸 UNION，必须写 UNION ALL 或 UNION DISTINCT。模型却经常只写 UNION。
+#   裸 UNION 会导致：sqlglot 用 ClickHouse 方言解析时抛
+#   `Expected DISTINCT or ALL for Union.` → 字段级权限闸门 _parse_sql 拿不到 AST
+#   → 按 fail-closed 原则拒绝执行（报「字段级权限拦截：SQL 解析失败」）。
+#   所以在「收尾」环节确定性地把裸 UNION 补成 UNION ALL，从根上消除这类拦截。
+# 【为什么用「逐字符状态机」而不是简单正则替换？】
+#   ① 要跳过字符串字面量 / 注释里的 UNION（例如 WHERE col = 'UNION' 不能被动）；
+#   ② 要识别「已经写全 ALL / DISTINCT」的合法写法，避免重复补（UNION ALL → UNION ALL ALL 是错的）。
+# 【⚠️ 只在 ClickHouse 下调用】裸 UNION 在标准 SQL / SQLite 里是合法的去重集合运算，
+#   改成 UNION ALL 会改变语义；因此调用方（_finalize_sql）必须按 DB_TYPE 判断后再调用。
+def normalize_union(sql):
+    """把「裸 UNION」改写为「UNION ALL」，返回改写后的 SQL 文本。
+
+    只改「关键字位置」的 UNION；跳过引号（' " `）与注释（-- 与 /* */）里的同名文本；
+    已经写全的 UNION ALL / UNION DISTINCT 原样保留、不重复补。
+    """
+    out = []                       # 分段拼回结果
+    n = len(sql)                   # 总长度
+    i = 0                          # 扫描游标
+    while i < n:
+        ch = sql[i]
+
+        # ① 字符串字面量 / 反引号标识符：原样拷贝到闭合引号（跳过其中的 UNION）
+        if ch in ("'", '"', "`"):
+            j = i + 1
+            while j < n:
+                if sql[j] == "\\" and j + 1 < n:   # 转义字符：连下一个一起跳过
+                    j += 2
+                    continue
+                if sql[j] == ch:                   # 找到闭合引号
+                    j += 1
+                    break
+                j += 1
+            out.append(sql[i:j])
+            i = j
+            continue
+
+        # ② 行注释 -- ：原样拷贝到行尾
+        if ch == "-" and i + 1 < n and sql[i + 1] == "-":
+            j = sql.find("\n", i)                  # 找行尾换行符
+            j = n if j == -1 else j
+            out.append(sql[i:j])
+            i = j
+            continue
+
+        # ③ 块注释 /* ... */ ：原样拷贝到结束
+        if ch == "/" and i + 1 < n and sql[i + 1] == "*":
+            j = sql.find("*/", i + 2)
+            j = n if j == -1 else j + 2
+            out.append(sql[i:j])
+            i = j
+            continue
+
+        # ④ 命中关键字 UNION（大小写不敏感，且前后都是词边界）
+        if sql[i:i + 5].upper() == "UNION":
+            before_ok = i == 0 or not (sql[i - 1].isalnum() or sql[i - 1] == "_")
+            after_ok = i + 5 >= n or not (sql[i + 5].isalnum() or sql[i + 5] == "_")
+            if before_ok and after_ok:
+                # 看 UNION 后面（跳过空白）是否已经写了 ALL / DISTINCT
+                k = i + 5
+                while k < n and sql[k].isspace():
+                    k += 1
+                word = sql[k:k + 12]
+                up = word.upper()
+                # 判定「ALL」：词后面不能再是字母/数字/下划线（排除 ALLOWED 之类）
+                has_all = up.startswith("ALL") and (len(up) <= 3 or not (up[3].isalnum() or up[3] == "_"))
+                # 判定「DISTINCT」（8 个字符）同理排除 DISTINCTION 之类
+                has_dist = up.startswith("DISTINCT") and (len(up) <= 8 or not (up[8].isalnum() or up[8] == "_"))
+                if has_all or has_dist:
+                    out.append(sql[i:k])           # 已写全 → 原样保留
+                    i = k
+                    continue
+                # 裸 UNION → 补 ALL（原空白由主循环继续拷贝）
+                out.append(sql[i:i + 5])
+                out.append(" ALL")
+                i = i + 5
+                continue
+        out.append(ch)                             # 普通字符，原样拷贝
+        i += 1
+    return "".join(out)
+
+
+# ═══════════════════════════════════════════════════════════
 # 第一道：清洗 —— 把 SQL 从模型的一堆废话里抠出来
 # ═══════════════════════════════════════════════════════════
 _SQL_LINE_RE = re.compile(
