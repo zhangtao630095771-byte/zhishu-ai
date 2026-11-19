@@ -53,8 +53,8 @@ function dmRenderDomainItems(list) {
     const subjTxt = subjects.length ? `${subjects.length} 主题` : "无主题";
     const assetTxt = `${dmAssetTotal(st)} 资产`;
     const onTag = m.enabled
-      ? '<span class="tag on" style="font-size:10px;padding:0 6px">已启用</span>'
-      : '<span class="tag off" style="font-size:10px;padding:0 6px">停用</span>';
+      ? '<span class="status-tag success" style="font-size:10px;padding:0 6px">已启用</span>'
+      : '<span class="status-tag gray" style="font-size:10px;padding:0 6px">停用</span>';
     div.innerHTML = `
       <div class="row" style="justify-content:space-between">
         <span>${esc(m.display_name || m.name)}</span>
@@ -189,7 +189,7 @@ async function dmSelectDomain(name, el) {
       <div class="row" style="gap:10px;flex-wrap:wrap;margin-bottom:8px">
         <b style="font-size:16px">${esc(d.display_name || d.name)}</b>
         <span class="muted" style="font-size:12px">${esc(name)}</span>
-        ${d.enabled ? '<span class="tag on">启用</span>' : '<span class="tag off">停用</span>'}
+        ${d.enabled ? '<span class="status-tag success">启用</span>' : '<span class="status-tag gray">停用</span>'}
         ${d.owner ? `<span class="muted" style="font-size:12px">负责人：${esc(d.owner)}</span>` : ""}
         ${d.department ? `<span class="muted" style="font-size:12px">部门：${esc(d.department)}</span>` : ""}
       </div>

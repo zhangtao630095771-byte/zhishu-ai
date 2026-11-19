@@ -52,7 +52,7 @@ function smModelRenderModels() {
     div.innerHTML = `
       <div class="row" style="justify-content:space-between">
         <span>${esc(m.display_name || m.name)}</span>
-        ${m.enabled ? '<span class="tag on" style="font-size:10px">启用</span>' : '<span class="tag off" style="font-size:10px">停用</span>'}
+        ${m.enabled ? '<span class="status-tag success" style="font-size:10px">启用</span>' : '<span class="status-tag gray" style="font-size:10px">停用</span>'}
       </div>
       <div class="muted" style="font-size:11px">${esc(m.name)} · 实体 ${st.entity ?? 0} · 指标 ${st.metric ?? 0} · 关系 ${st.relationship ?? 0}</div>`;
     div.onclick = () => smModelSelectModel(m.name, div);
@@ -85,7 +85,7 @@ function smModelRenderDetail(d) {
   const dims = d.dimensions || [];
 
   const roleTag = r => r === "primary"
-    ? '<span class="tag on" style="font-size:10px">主表</span>'
+    ? '<span class="tag" style="background:var(--color-success-bg);color:var(--color-success);font-size:10px">主表</span>'
     : r === "satellite" ? '<span class="tag" style="background:var(--color-warning-bg);color:var(--color-warning);font-size:10px">卫星表</span>'
     : '<span class="tag" style="background:var(--color-bg-subtle);color:var(--color-text-secondary);font-size:10px">关联表</span>';
 

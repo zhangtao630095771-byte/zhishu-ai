@@ -149,8 +149,8 @@ function ontoRenderEditor(d) {
   const editor = document.getElementById("ontoEditor");
 
   const stTag = (ent.status === "approved")
-    ? '<span class="tag on">已审核</span>'
-    : `<span class="tag off">${esc(ent.status || "candidate")}</span>`;
+    ? '<span class="status-tag success">已审核</span>'
+    : `<span class="status-tag gray">${esc({ candidate: "候选", draft: "草稿", rejected: "已驳回" }[ent.status] || ent.status || "candidate")}</span>`;
 
   editor.innerHTML = `
     <div class="row" style="justify-content:space-between;align-items:flex-start">

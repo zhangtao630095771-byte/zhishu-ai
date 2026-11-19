@@ -142,7 +142,7 @@ function lineageRenderEntityLineage(d) {
         <b style="font-size:16px">${esc(e.name)}</b>
         <span class="muted" style="font-size:11px;margin-left:8px">${esc(e.table_name || "（无主表）")}</span>
       </div>
-      <span class="tag ${e.status === 'approved' ? 'on' : 'off'}">${esc(e.status || "approved")}</span>
+      <span class="status-tag ${e.status === 'approved' ? 'success' : 'gray'}">${esc({ approved: "已审核", candidate: "候选", draft: "草稿", rejected: "已驳回" }[e.status] || e.status || "approved")}</span>
     </div>
     ${e.comment ? `<div class="muted" style="font-size:12px;margin-top:4px">${esc(e.comment)}</div>` : ""}
     ${pk.length ? `<div class="muted" style="font-size:11px;margin-top:2px">主键：${esc(pk.join(", "))}</div>` : ""}

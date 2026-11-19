@@ -28,7 +28,8 @@ const RV_ZH = { none: "未提交审核", pending: "待管理员审核",
 function rvChip(st) {
   const s = st || "none";
   const live = (s === "pending") ? '<i class="live"></i>' : "";
-  return `<span class="rv-chip ${s}">${live}${RV_ZH[s] || s}</span>`;
+  const cls = { none: "gray", pending: "warning", approved: "success", rejected: "danger" }[s] || "gray";
+  return `<span class="status-tag ${cls}">${live}${RV_ZH[s] || s}</span>`;
 }
 
 function fmtWhen(s) {
@@ -73,7 +74,8 @@ function renderReviewState() {
   // ── 结果区状态胶囊 + 提交按钮 ──
   if (topChip) {
     const s = st || "none";
-    topChip.className = "rv-chip " + s;
+    const cls = { none: "gray", pending: "warning", approved: "success", rejected: "danger" }[s] || "gray";
+    topChip.className = "status-tag " + cls;
     topChip.innerHTML = (s === "pending" ? '<i class="live"></i>' : "") + (RV_ZH[s] || s);
   }
   if (btn) {
@@ -407,45 +409,45 @@ function renderTrustBar(r) {
   if (!r) { box.innerHTML = ""; return; }
   const chips = [];
   if (r.pipeline) {
-    chips.push(`<span class="trust-chip ${r.pipeline === "legacy" ? "warn" : ""}">${r.pipeline === "legacy" ? "旧流水线" : "企业级流水线"}</span>`);
+    chips.push(`<span class="status-tag ${r.pipeline === "legacy" ? "warning" : "gray"}">${r.pipeline === "legacy" ? "旧流水线" : "企业级流水线"}</span>`);
   }
   if (r.degraded) {
-    chips.push(`<span class="trust-chip bad">已降级</span>`);
+    chips.push(`<span class="status-tag danger">已降级</span>`);
   }
   if (r.validation) {
     const errs = r.validation.filter(x => x.severity === "error").length;
     const warns = r.validation.filter(x => x.severity === "warning").length;
-    if (errs) chips.push(`<span class="trust-chip bad">校验错误 ${errs}</span>`);
-    else if (warns) chips.push(`<span class="trust-chip warn">校验提示 ${warns}</span>`);
-    else chips.push(`<span class="trust-chip ok">校验通过</span>`);
+    if (errs) chips.push(`<span class="status-tag danger">校验错误 ${errs}</span>`);
+    else if (warns) chips.push(`<span class="status-tag warning">校验提示 ${warns}</span>`);
+    else chips.push(`<span class="status-tag success">校验通过</span>`);
   }
   if (r.result_warnings && r.result_warnings.length) {
-    chips.push(`<span class="trust-chip warn">结果提示 ${r.result_warnings.length}</span>`);
+    chips.push(`<span class="status-tag warning">结果提示 ${r.result_warnings.length}</span>`);
   }
   // ── SQL 经验：本次到底参考了哪条历史案例（可追溯，不满意就直接去「SQL经验」页看） ──
   const xp = r.experience || {};
   const xpCases = xp.cases || [], xpFails = xp.failures || [];
   if (xpCases.length) {
     const tip = xpCases.map(c => `${c.case_no || ("#" + c.id)}（分数 ${c.score}，${c.trust || "-"}）`).join("\n");
-    chips.push(`<span class="trust-chip ok" title="${esc(tip)}">参考经验 ${xpCases.length}</span>`);
+    chips.push(`<span class="status-tag success" title="${esc(tip)}">参考经验 ${xpCases.length}</span>`);
   }
   if (xpFails.length) {
     const tip = xpFails.map(c => `${c.case_no || ("#" + c.id)}（${c.failure_type || "失败经验"}）`).join("\n");
-    chips.push(`<span class="trust-chip" title="${esc(tip)}">避坑 ${xpFails.length}</span>`);
+    chips.push(`<span class="status-tag gray" title="${esc(tip)}">避坑 ${xpFails.length}</span>`);
   }
   if (r.experience_warnings && r.experience_warnings.length) {
     const tip = r.experience_warnings.map(w => w.message || w.code).join("\n");
-    chips.push(`<span class="trust-chip warn" title="${esc(tip)}">经验预警 ${r.experience_warnings.length}</span>`);
+    chips.push(`<span class="status-tag warning" title="${esc(tip)}">经验预警 ${r.experience_warnings.length}</span>`);
   }
   if (r.row_count !== undefined && r.row_count !== null) {
-    chips.push(`<span class="trust-chip">${r.row_count} 行</span>`);
+    chips.push(`<span class="status-tag gray">${r.row_count} 行</span>`);
   }
   // ★ 命中缓存要明说：秒回不是模型变快了，用户有权知道这一点再决定信不信这个数
   if (r.cache_hit) {
-    chips.push(`<span class="trust-chip" title="同一问题在 120 秒内被再次提出，直接复用上次结果（含权限过滤与脱敏）">缓存命中</span>`);
+    chips.push(`<span class="status-tag gray" title="同一问题在 120 秒内被再次提出，直接复用上次结果（含权限过滤与脱敏）">缓存命中</span>`);
   }
   if (r.attempts > 1) {
-    chips.push(`<span class="trust-chip warn">重试 ${r.attempts} 次</span>`);
+    chips.push(`<span class="status-tag warning">重试 ${r.attempts} 次</span>`);
   }
   box.innerHTML = chips.join("");
 }

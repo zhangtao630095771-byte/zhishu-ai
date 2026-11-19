@@ -241,7 +241,7 @@ function kbRenderSources() {
     const div = document.createElement("div");
     div.className = "list-item";
     div.innerHTML = `
-      <span>${esc(s.dict_type)} ${s.imported ? '<span class="tag on">已导入</span>' : ""}
+      <span>${esc(s.dict_type)} ${s.imported ? '<span class="status-tag success">已导入</span>' : ""}
         <div class="muted" style="font-size:12px">${esc(s.sample || "")}</div></span>
       <span class="muted" style="white-space:nowrap">${s.count} 条
         <button class="ghost" style="margin-left:8px"

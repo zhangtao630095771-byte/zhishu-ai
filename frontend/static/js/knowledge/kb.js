@@ -161,11 +161,11 @@ function kbRenderIngestResults(boxId) {
       const del = r.status === "deleted";
       const skipped = r.status === "skipped";
       const badge = del
-        ? `<span class="badge err">已删除</span>`
+        ? `<span class="status-tag danger">已删除</span>`
         : skipped
-          ? `<span class="badge warning">已跳过</span>`
-          : `<span class="badge ${r.status === 'ok' ? 'ok' : 'err'}">${r.status === 'ok' ? '已录入' : '失败'}</span>`;
-      return `<div style="padding:6px 0;border-top:1px dashed #eee;display:flex;justify-content:space-between;align-items:center">
+          ? `<span class="status-tag warning">已跳过</span>`
+          : `<span class="status-tag ${r.status === 'ok' ? 'success' : 'danger'}">${r.status === 'ok' ? '已录入' : '失败'}</span>`;
+      return `<div style="padding:6px 0;border-top:1px dashed var(--color-border);display:flex;justify-content:space-between;align-items:center">
         <div>
           ${badge}
           <span class="tier">${esc(INGEST_TYPE_ZH[r.type] || r.type || '')}</span>

@@ -150,7 +150,7 @@ function regPickJoin(i) {
 //   ★ 编辑/删除按钮一律传【下标】，不把名称拼进 onclick —— 名称里带引号会直接崩。
 let regEdit = { entity: null, rel: null, doc: null };
 let regCache = { entities: [], rels: [], docs: [] };
-const regBadge = en => (en === false ? '<span class="badge err">已停用</span> ' : "");
+const regBadge = en => (en === false ? '<span class="status-tag gray">已停用</span> ' : "");
 
 async function regRenderEntities() {
   const box = document.getElementById("regEntities");
@@ -579,13 +579,13 @@ async function kbOpenTable(name, el) {
     //     manual = 人写的（或人改过 AI 版）→ 定稿，重新授权不会被覆盖
     //     ai     = AI 生成的临时版      → 已生效并注入 RAG，但下次重新授权会被覆盖
     //     ""     = 还没有
-    const srcTag = d.comment_source === "manual" ? '<span class="tag on">人工</span>'
-      : d.comment_source === "ai" ? '<span class="tag ai">AI 生成</span>'
-      : '<span class="tag off">待补</span>';
+    const srcTag = d.comment_source === "manual" ? '<span class="status-tag success">人工</span>'
+      : d.comment_source === "ai" ? '<span class="status-tag info">AI 生成</span>'
+      : '<span class="status-tag gray">待补</span>';
     box.innerHTML = `
       <div class="row" style="justify-content:space-between;flex-wrap:wrap;gap:8px">
         <h3 style="margin:0">${esc(d.table)}
-          ${d.visible ? '<span class="tag on">已授权</span>' : '<span class="tag off">未授权</span>'}
+          ${d.visible ? '<span class="status-tag success">已授权</span>' : '<span class="status-tag gray">未授权</span>'}
           ${srcTag}
         </h3>
         <div class="row">
@@ -655,10 +655,10 @@ function kbRenderColumns() {
     //   ★ 四态：人工（定稿）/ AI（机器补的，可改）/ 库（自带，仅参考）/ 待补
     //     AI 这一态必须显示出来：它表示"这份注释能用了，但没人核实过"。
     //     不标的话，用户会把 AI 的推断当成同事确认过的口径去用。
-    const src = c.comment_source === "manual" ? '<span class="tag on">人工</span>'
-      : c.comment_source === "ai" ? '<span class="tag ai" title="AI 根据真实取值生成，未经人工核实">AI</span>'
-      : c.comment_source === "db" ? '<span class="tag layer">库</span>'
-      : '<span class="tag off">待补</span>';
+    const src = c.comment_source === "manual" ? '<span class="status-tag success">人工</span>'
+      : c.comment_source === "ai" ? '<span class="status-tag info" title="AI 根据真实取值生成，未经人工核实">AI</span>'
+      : c.comment_source === "db" ? '<span class="status-tag info">库</span>'
+      : '<span class="status-tag gray">待补</span>';
     //  AI 生成的那份，把原注释顶掉之前给个提示：改动会锁定成人工版
     const aiTip = c.comment_source === "ai"
       ? `<span class="muted" style="font-size:12px">改过即锁定</span>` : "";
@@ -813,19 +813,19 @@ let kbDocTimer = null;         // 轮询定时器（后台生成时刷新用）
 /** 来源提示行的文案：把"这份注释现在是草稿态还是定稿态"说清楚 */
 function kbSrcNoteHtml(source, generating) {
   if (generating) {
-    return `<span class="tag ai">生成中</span>
+    return `<span class="status-tag info">生成中</span>
       <span>正在通读这张表的字段清单生成注释…（几秒，可以先做别的）</span>`;
   }
   if (source === "ai") {
-    return `<span class="tag ai">AI 生成</span>
+    return `<span class="status-tag info">AI 生成</span>
       <span>这是 AI 根据字段信息生成的<b>草稿注释，当前是「待复核」，还没进检索</b>。
         可以直接在上面改；你不改的话，这张表下次重新开放权限时会被新一版覆盖。</span>`;
   }
   if (source === "manual") {
-    return `<span class="tag on">人工</span>
+    return `<span class="status-tag success">人工</span>
       <span>已定稿 —— 这张表重新开放权限时<b>不会被</b> AI 覆盖。</span>`;
   }
-  return `<span class="tag off">待补</span>
+  return `<span class="status-tag gray">待补</span>
     <span>还没有表注释 —— 点下面按钮让 AI 生成，或先在「表与权限」里开放这张表。</span>`;
 }
 

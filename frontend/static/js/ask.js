@@ -358,7 +358,7 @@ function paintClarify() {
       <span class="co-check">${isSel(o.value) ? "✓" : ""}</span>
       <span>
         <div class="co-name">${esc(o.label)}
-          ${o.status === "approved" ? '<span class="co-badge">已审核</span>' : ''}</div>
+          ${o.status === "approved" ? '<span class="status-tag success">已审核</span>' : ''}</div>
         <div class="co-def">${esc(o.definition || "（无定义）")}</div>
         <div class="co-meta">${esc(o.diff || o.source || "")}${o.impact && o.impact !== "—" ? " · " + esc(o.impact) : ""}</div>
       </span>
@@ -634,12 +634,12 @@ function chainStep(state, label, detail) {
 function _bizChip(c) {
   const rs = (typeof CURRENT_RECORD !== "undefined" && CURRENT_RECORD)
     ? CURRENT_RECORD.review_status : null;
-  if (rs === "approved") return `<span class="trust-chip ok">业务已核</span>`;
-  if (rs === "rejected") return `<span class="trust-chip bad">业务未通过</span>`;
-  if (rs === "pending")  return `<span class="trust-chip warn">待业务审核</span>`;
-  if (c && c.business_verified === true)  return `<span class="trust-chip ok">业务已核</span>`;
-  if (c && c.business_verified === false) return `<span class="trust-chip bad">业务未通过</span>`;
-  return `<span class="trust-chip">业务未核</span>`;
+  if (rs === "approved") return `<span class="status-tag success">业务已核</span>`;
+  if (rs === "rejected") return `<span class="status-tag danger">业务未通过</span>`;
+  if (rs === "pending")  return `<span class="status-tag warning">待业务审核</span>`;
+  if (c && c.business_verified === true)  return `<span class="status-tag success">业务已核</span>`;
+  if (c && c.business_verified === false) return `<span class="status-tag danger">业务未通过</span>`;
+  return `<span class="status-tag gray">业务未核</span>`;
 }
 
 /** 只重画「业务已核」这个副标签（审核状态变化时调用，不整页重画） */
@@ -703,12 +703,12 @@ function renderStatusChain(r) {
   // 副标签：只放"四步之外但影响可信度"的信息
   const meta = [];
   if (c.result_sane === false) {
-    meta.push(`<span class="trust-chip warn">结果有待核疑点</span>`);
+    meta.push(`<span class="status-tag warning">结果有待核疑点</span>`);
   } else if (c.result_sane === true) {
-    meta.push(`<span class="trust-chip ok">结果体检无疑点</span>`);
+    meta.push(`<span class="status-tag success">结果体检无疑点</span>`);
   }
   if (c.requirement_attempts > 0) {
-    meta.push(`<span class="trust-chip warn" title="需求审核判不通过后，模型被要求定向修正了几轮">需求修正 ${c.requirement_attempts} 次</span>`);
+    meta.push(`<span class="status-tag warning" title="需求审核判不通过后，模型被要求定向修正了几轮">需求修正 ${c.requirement_attempts} 次</span>`);
   }
   meta.push(`<span id="chainBiz">${_bizChip(c)}</span>`);
 
@@ -893,7 +893,7 @@ function renderReview(r) {
   const fields = (rev.fields || []).map(f => {
     const ok = f.logic_ok === true ? "✓" : f.logic_ok === false ? "✗" : "•";
     const col = f.logic_ok === true ? "var(--color-success)" : f.logic_ok === false ? "var(--color-danger)" : "var(--color-text-muted)";
-    return `<div style="padding:5px 0;border-top:1px dashed #eee;font-size:13px">
+    return `<div style="padding:5px 0;border-top:1px dashed var(--color-border);font-size:13px">
       <span style="color:${col};font-weight:700;margin-right:6px">${ok}</span>
       <b>${esc(f.field || "")}</b>
       <span style="color:var(--color-text-secondary);margin-left:6px">${esc(f.comment || "")}</span>
@@ -974,7 +974,7 @@ function renderValidation(r) {
     const isErr = i.severity === "error";
     const ruleZh = RULE_ZH[i.rule] || "";
     return `<div class="val-item ${i.severity}">
-      <span class="badge ${i.severity}">${isErr ? "拦截" : "提醒"}</span>
+      <span class="status-tag ${isErr ? "danger" : "warning"}">${isErr ? "拦截" : "提醒"}</span>
       <span class="tier">${esc(i.tier || "")}${ruleZh ? " · " + esc(ruleZh) : ""}</span>
       <div class="val-body">
         <div class="val-msg">${esc(i.message || "")}</div>

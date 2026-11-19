@@ -244,7 +244,7 @@
   /* ── SQL 生成前校验报告（5 维）── */
   .val-item {
     display: grid; grid-template-columns: 52px 46px 1fr; gap: 8px;
-    align-items: start; padding: 8px 0; border-top: 1px dashed #eee; font-size: 13px;
+    align-items: start; padding: 8px 0; border-top: 1px dashed var(--color-border); font-size: 13px;
   }
   .val-item:first-of-type { border-top: none; }
   .val-body { min-width: 0; }
@@ -557,7 +557,7 @@
   /* ── 语义注册表条目：左信息（可换行）+ 右操作（固定并排）── */
   .reg-row {
     display: flex; justify-content: space-between; align-items: flex-start;
-    gap: 12px; padding: 8px 0; border-top: 1px dashed #eee;
+    gap: 12px; padding: 8px 0; border-top: 1px dashed var(--color-border);
   }
   .reg-info { flex: 1 1 auto; min-width: 0; word-break: break-word; overflow-wrap: anywhere; }
   .reg-acts { flex: 0 0 auto; display: flex; gap: 6px; white-space: nowrap; }
@@ -716,7 +716,7 @@
     border: none; background: transparent; cursor: pointer; padding: 0 1px;
     font-size: 12px; line-height: 1.4; color: var(--color-border-strong); flex: none;
   }
-  .hist-item .fav-star.on { color: #ff9a2e; }
+  .hist-item .fav-star.on { color: var(--color-warning); }
   .hist-item .fav-star:hover { color: var(--color-warning); }
 
   /* ── 收藏取数页 ── */
@@ -725,7 +725,7 @@
     border: 1px solid var(--color-border); border-radius: 10px; padding: 13px 15px;
     background: #fff; transition: border-color .15s;
   }
-  .fav-row:hover { border-color: #b9cbff; }
+  .fav-row:hover { border-color: var(--color-info-border); }
   .fav-q {
     font-size: 14px; color: var(--color-text-primary); font-weight: 500; line-height: 1.55;
     word-break: break-word; overflow-wrap: anywhere;
@@ -800,7 +800,7 @@
   .trust-chip.warn { background: var(--color-warning-bg); color: var(--color-warning); }
   .trust-chip.bad  { background: var(--color-danger-bg); color: var(--color-danger); }
   #favBtn.on { color: var(--color-warning); border-color: #ffd591; background: var(--color-warning-bg); }
-  .rv-chip .live {
+  .status-tag .live, .rv-chip .live {
     width: 6px; height: 6px; border-radius: 50%; background: currentColor;
     animation: rvpulse 1.6s ease-in-out infinite;
   }
@@ -941,7 +941,7 @@
     background: #fff; border: 1px solid #fbaca3; border-left: 3px solid var(--color-danger);
     border-radius: 8px; padding: 14px 16px; margin-bottom: 14px;
   }
-  .req-clarify .rc-head { font-size: 14px; font-weight: 600; color: #cb2634; margin-bottom: 6px; }
+  .req-clarify .rc-head { font-size: 14px; font-weight: 600; color: var(--color-danger); margin-bottom: 6px; }
   .req-clarify .rc-reason { font-size: 12.5px; color: var(--color-text-secondary); line-height: 1.7; }
   .req-clarify .rc-qs { margin: 10px 0 0 18px; padding: 0; font-size: 13px; color: var(--color-text-primary); line-height: 1.9; list-style: disc; }
   .req-clarify .rc-hint { margin-top: 10px; font-size: 12px; color: var(--color-text-muted); }
